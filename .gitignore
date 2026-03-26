@@ -1,0 +1,14 @@
+.pio
+.vscode
+.gemini
+*.o
+*.bin
+*.elf
+node_modules
+.DS_Store
+
+# Doxygen output
+docs/
+
+# Internal documentation
+COOKBOOK.md
