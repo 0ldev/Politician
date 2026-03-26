@@ -1,0 +1,22 @@
+GitHub Topics to Add (go to repo settings):
+
+esp32
+esp32-c6
+wifi
+wifi-security
+wifi-auditing
+penetration-testing
+security
+wardriving
+pmkid
+handshake-capture
+wpa2
+wpa3
+802-11
+networking
+iot-security
+embedded
+arduino
+platformio
+cybersecurity
+wireless
