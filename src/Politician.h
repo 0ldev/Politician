@@ -53,6 +53,7 @@ typedef struct {
 #define MGMT_SUB_PROBE_REQ  0x40
 #define MGMT_SUB_PROBE_RESP 0x50
 #define MGMT_SUB_BEACON     0x80
+#define MGMT_SUB_AUTH_RESP  0xB0
 #define MGMT_SUB_DEAUTH     0xC0
 
 // ─── EAPOL ────────────────────────────────────────────────────────────────────
@@ -194,6 +195,17 @@ public:
     /** @return Reference to the internal configuration struct for runtime mutations. */
     Config&         getConfig()   { return _cfg; }
 
+    /** @return Number of unique APs currently in the discovery cache. */
+    int             getApCount()  const;
+
+    /**
+     * @brief Reads an AP from the discovery cache by index.
+     * @param idx Zero-based index (0 to getApCount()-1).
+     * @param out Populated with the AP's details on success.
+     * @return True if idx is valid, false otherwise.
+     */
+    bool            getAp(int idx, ApRecord &out) const;
+
     using EapolCb          = void (*)(const HandshakeRecord &rec);
     using ApFoundCb        = void (*)(const ApRecord &ap);
     using TargetFilterCb   = bool (*)(const ApRecord &ap);
@@ -294,6 +306,7 @@ private:
         uint8_t  ssid_len;
         uint8_t  enc;
         uint8_t  channel;
+        int8_t   rssi;
         uint32_t last_probe_ms;
         uint32_t last_stimulate_ms;
         bool     has_active_clients;
@@ -303,7 +316,7 @@ private:
     int          _apCacheCount;
 
     void _cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
-                  uint8_t enc, uint8_t channel, bool is_wpa3_only = false);
+                  uint8_t enc, uint8_t channel, int8_t rssi, bool is_wpa3_only = false);
     bool _lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len);
     bool _lookupEnc(const uint8_t *bssid, uint8_t &out_enc);
 

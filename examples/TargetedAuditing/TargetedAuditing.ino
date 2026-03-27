@@ -31,7 +31,7 @@ bool myTargetingFilter(const ApRecord &ap) {
     }
     
     // 2. FILTER BY ENCRYPTION
-    // 0 = Open, 1 = WEP, 2 = WPA, 3 = WPA2, 4 = WPA3
+    // 0 = Open, 1 = WEP, 2 = WPA, 3 = WPA2/WPA3, 4 = Enterprise
     // Open networks don't have handshakes, so we ignore them.
     if (ap.enc < 3) {
         return false;

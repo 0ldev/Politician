@@ -58,7 +58,6 @@ void setup() {
     }
     
     engine.startHopping();
-    engine.setActive(true);
     engine.setAttackMask(ATTACK_ALL);
 
     Serial.println("Wardriving started...");

@@ -254,6 +254,8 @@ void Politician::tick() {
             _probeLocked ? "probe" : _m1Locked ? "m1" : "none");
     }
 
+    _expireSessions(_cfg.session_timeout_ms);
+
     if (!_hopping) return;
     uint32_t now = millis();
 
@@ -275,7 +277,6 @@ void Politician::tick() {
         _channel   = seq[_hopIndex];
         esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE);
         _lastHopMs = now;
-        _expireSessions(_cfg.session_timeout_ms);
     }
 }
 
@@ -384,11 +385,13 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         ap.enc     = _classifyEnc(ie, ie_len);
         if (ap.enc == 0 && (hdr->frame_ctrl & 0x4000)) ap.enc = 1; // WEP Privacy bit
 
+        if (ap.rssi < _cfg.min_rssi) return;
+
         // Execute targeting filter
         if (_filterCb && !_filterCb(ap)) return;
 
         bool is_wpa3_only = (ap.enc >= 3) && _detectWpa3Only(ie, ie_len);
-        _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch, is_wpa3_only);
+        _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch, rssi, is_wpa3_only);
         if (_apFoundCb) _apFoundCb(ap);
 
         if (ap.ssid_len > 0 && beacon_ch > 0) {
@@ -465,7 +468,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 break;
             }
         }
-    } else if (subtype == 0xB0) {
+    } else if (subtype == MGMT_SUB_AUTH_RESP) {
         if (len >= 6 && !_fishAuthLogged) {
             uint16_t auth_seq = ((uint16_t)payload[2]) | ((uint16_t)payload[3] << 8);
             uint16_t status   = ((uint16_t)payload[4]) | ((uint16_t)payload[5] << 8);
@@ -857,12 +860,12 @@ Politician::Session* Politician::_createSession(const uint8_t *bssid, const uint
 }
 
 void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
-                           uint8_t enc, uint8_t channel, bool is_wpa3_only) {
+                           uint8_t enc, uint8_t channel, int8_t rssi, bool is_wpa3_only) {
     for (int i = 0; i < MAX_AP_CACHE; i++) {
         if (_apCache[i].active && memcmp(_apCache[i].bssid, bssid, 6) == 0) {
             memcpy(_apCache[i].ssid, ssid, ssid_len + 1); _apCache[i].ssid_len = ssid_len;
-            _apCache[i].enc = enc; _apCache[i].channel = channel; 
-            _apCache[i].is_wpa3_only = is_wpa3_only; 
+            _apCache[i].enc = enc; _apCache[i].channel = channel;
+            _apCache[i].rssi = rssi; _apCache[i].is_wpa3_only = is_wpa3_only;
             return;
         }
     }
@@ -871,7 +874,7 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
     _apCache[slot].last_stimulate_ms = 0;
     memcpy(_apCache[slot].bssid, bssid, 6); memcpy(_apCache[slot].ssid, ssid, ssid_len + 1);
     _apCache[slot].ssid_len = ssid_len; _apCache[slot].enc = enc; _apCache[slot].channel = channel;
-    _apCache[slot].is_wpa3_only = is_wpa3_only;
+    _apCache[slot].rssi = rssi; _apCache[slot].is_wpa3_only = is_wpa3_only;
     _apCacheCount++;
 }
 
@@ -882,6 +885,30 @@ bool Politician::_lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_
         }
     }
     out_ssid[0] = '\0'; out_len = 0; return false;
+}
+
+int Politician::getApCount() const {
+    int n = 0;
+    for (int i = 0; i < MAX_AP_CACHE; i++) if (_apCache[i].active) n++;
+    return n;
+}
+
+bool Politician::getAp(int idx, ApRecord &out) const {
+    int found = 0;
+    for (int i = 0; i < MAX_AP_CACHE; i++) {
+        if (!_apCache[i].active) continue;
+        if (found == idx) {
+            memcpy(out.bssid, _apCache[i].bssid, 6);
+            memcpy(out.ssid,  _apCache[i].ssid,  33);
+            out.ssid_len = _apCache[i].ssid_len;
+            out.enc      = _apCache[i].enc;
+            out.channel  = _apCache[i].channel;
+            out.rssi     = _apCache[i].rssi;
+            return true;
+        }
+        found++;
+    }
+    return false;
 }
 
 bool Politician::_lookupEnc(const uint8_t *bssid, uint8_t &out_enc) {
@@ -983,6 +1010,7 @@ void Politician::_processFishing() {
         }
         if (millis() >= _probeLockEndMs) {
             _fishState = FISH_IDLE; _probeLocked = false; _lastHopMs = millis();
+            _stats.failed_csa++;
             _log("[CSA] Wait expired\n");
             if (_attackResultCb) {
                 AttackResultRecord r; memset(&r, 0, sizeof(r));
@@ -1006,6 +1034,7 @@ void Politician::_processFishing() {
             _fishState = FISH_CSA_WAIT; _probeLocked = true; _probeLockEndMs = millis() + _cfg.csa_wait_ms; _csaSecondBurstSent = false;
         } else {
             _fishState = FISH_IDLE; _probeLocked = false; _lastHopMs = millis();
+            _stats.failed_pmkid++;
             _log("[Fish] Exhausted\n");
             if (_attackResultCb) {
                 AttackResultRecord r; memset(&r, 0, sizeof(r));

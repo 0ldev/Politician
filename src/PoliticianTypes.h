@@ -67,6 +67,7 @@ struct Config {
     bool     skip_immune_networks = true; // Ignore Pure WPA3 / PMF Required networks
     uint8_t  csa_deauth_count    = 15;   // Number of standard deauths to append
     uint8_t  capture_filter      = LOG_FILTER_HANDSHAKES | LOG_FILTER_PROBES; // Exclude Beacons by default to save SD storage
+    int8_t   min_rssi            = -100; // Ignore APs with signal weaker than this (dBm)
 };
 
 // ─── AP Record ────────────────────────────────────────────────────────────────
@@ -89,6 +90,8 @@ struct Stats {
     uint32_t pmkid_found;
     uint32_t beacons;
     uint32_t captures;
+    uint32_t failed_pmkid; // PMKID retries exhausted without capture
+    uint32_t failed_csa;   // CSA/Deauth wait expired without EAPOL
 };
 
 // ─── Handshake Record ─────────────────────────────────────────────────────────

@@ -141,14 +141,16 @@ public:
      * @return true if successful, false if file could not be opened
      */
     static bool append(fs::FS &fs, const char* path, const HandshakeRecord& rec,
-                       float lat, float lon, float alt = 0.0, float acc = 10.0) {
+                       float lat, float lon, float alt = 0.0, float acc = 10.0,
+                       const char* timestamp = nullptr) {
         fs::File file = _openWithHeader(fs, path);
         if (!file) return false;
 
         char line[256];
-        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%s,%s,1970-01-01 00:00:00,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
+        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%s,%s,%s,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
                  rec.bssid[0], rec.bssid[1], rec.bssid[2], rec.bssid[3], rec.bssid[4], rec.bssid[5],
-                 rec.ssid, _authStr(rec.enc), rec.channel, rec.rssi, lat, lon, alt, acc);
+                 rec.ssid, _authStr(rec.enc), timestamp ? timestamp : "1970-01-01 00:00:00",
+                 rec.channel, rec.rssi, lat, lon, alt, acc);
 
         file.println(line);
         file.flush();
@@ -170,14 +172,16 @@ public:
      * @return true if successful, false if file could not be opened
      */
     static bool appendAp(fs::FS &fs, const char* path, const ApRecord& ap,
-                         float lat, float lon, float alt = 0.0, float acc = 10.0) {
+                         float lat, float lon, float alt = 0.0, float acc = 10.0,
+                         const char* timestamp = nullptr) {
         fs::File file = _openWithHeader(fs, path);
         if (!file) return false;
 
         char line[256];
-        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%s,%s,1970-01-01 00:00:00,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
+        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%s,%s,%s,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
                  ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5],
-                 ap.ssid, _authStr(ap.enc), ap.channel, ap.rssi, lat, lon, alt, acc);
+                 ap.ssid, _authStr(ap.enc), timestamp ? timestamp : "1970-01-01 00:00:00",
+                 ap.channel, ap.rssi, lat, lon, alt, acc);
 
         file.println(line);
         file.flush();
@@ -297,6 +301,11 @@ public:
         return true;
     }
     
+    /**
+     * @brief Returns the number of BSSIDs currently stored.
+     */
+    size_t count() const { return _count; }
+
     /**
      * @brief Clears the entire cache from NVS.
      */

@@ -86,7 +86,7 @@ void loop() {
             Serial.println("\n[UI] Filter -> Targeting ONLY WPA2/WPA3 Networks.");
             // Hot-swap the callback lambda at runtime
             engine.setTargetFilter([](const politician::ApRecord &ap) {
-                return (ap.enc >= 3); // 3=WPA2, 4=WPA3
+                return (ap.enc >= 3); // 3=WPA2/WPA3, 4=Enterprise
             });
 
         } else if (c == 'F' || c == 'f') {

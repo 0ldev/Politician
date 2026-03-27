@@ -16,8 +16,7 @@ void setup() {
 
     Serial.println("\n[+] Initializing Storage...");
     if (!SD.begin(5)) {
-        Serial.println("[-] SD Card Mount Failed! Cannot log credentials.");
-        return;
+        Serial.println("[-] SD Card Mount Failed! Identities will not be saved to disk.");
     }
 
     Serial.println("[+] Enabling Politician Auto-Hunter Engine...");
