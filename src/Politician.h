@@ -151,6 +151,22 @@ public:
     void    setChannelList(const uint8_t *channels, uint8_t count);
 
     /**
+     * @brief Restricts hopping to 2.4GHz, 5GHz, or both bands.
+     * @param ghz24 Include 2.4GHz channels (1-13)
+     * @param ghz5  Include 5GHz common channels (36-165)
+     */
+    void    setChannelBands(bool ghz24, bool ghz5);
+
+    /**
+     * @brief Searches the AP cache by SSID and locks onto the strongest match.
+     * Equivalent to calling setTarget() on the best matching AP.
+     * @param ssid Null-terminated SSID string to search for.
+     * @return OK on success, ERR_NOT_FOUND if SSID is not in cache,
+     *         ERR_ALREADY_CAPTURED if BSSID is already captured, ERR_NOT_ACTIVE if not initialized.
+     */
+    Error   setTargetBySsid(const char *ssid);
+
+    /**
      * @brief Main worker method. Must be called frequently from loop().
      */
     void    tick();

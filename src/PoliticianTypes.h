@@ -47,7 +47,8 @@ enum Error {
     ERR_WIFI_INIT = 1,
     ERR_INVALID_CH = 2,
     ERR_NOT_ACTIVE = 3,
-    ERR_ALREADY_CAPTURED = 4
+    ERR_ALREADY_CAPTURED = 4,
+    ERR_NOT_FOUND = 5
 };
 
 /**

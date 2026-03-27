@@ -238,6 +238,45 @@ void Politician::setChannelList(const uint8_t *channels, uint8_t count) {
     _log("[WiFi] Channel list set: %d channels\n", _customChannelCount);
 }
 
+void Politician::setChannelBands(bool ghz24, bool ghz5) {
+    _customChannelCount = 0;
+    if (ghz24) {
+        for (uint8_t i = 0; i < HOP_COUNT && _customChannelCount < POLITICIAN_MAX_CHANNELS; i++) {
+            _customChannels[_customChannelCount++] = HOP_SEQ[i];
+        }
+    }
+    if (ghz5) {
+        for (uint8_t i = 0; i < sizeof(CHANNEL_5GHZ_COMMON) && _customChannelCount < POLITICIAN_MAX_CHANNELS; i++) {
+            _customChannels[_customChannelCount++] = CHANNEL_5GHZ_COMMON[i];
+        }
+    }
+    if (_customChannelCount == 0) {
+        _log("[WiFi] setChannelBands: no bands selected — reverting to default 2.4GHz\n");
+    } else {
+        _log("[WiFi] Channel bands set: %d channels (2.4GHz=%d 5GHz=%d)\n",
+             _customChannelCount, (int)ghz24, (int)ghz5);
+    }
+    _hopIndex = 0;
+}
+
+Error Politician::setTargetBySsid(const char *ssid) {
+    if (!_initialized) return ERR_NOT_ACTIVE;
+    uint8_t ssid_len = (uint8_t)strlen(ssid);
+    int best = -1;
+    int8_t best_rssi = INT8_MIN;
+    for (int i = 0; i < MAX_AP_CACHE; i++) {
+        if (!_apCache[i].active) continue;
+        if (_apCache[i].ssid_len != ssid_len) continue;
+        if (memcmp(_apCache[i].ssid, ssid, ssid_len) != 0) continue;
+        if (_apCache[i].rssi > best_rssi) {
+            best_rssi = _apCache[i].rssi;
+            best = i;
+        }
+    }
+    if (best == -1) return ERR_NOT_FOUND;
+    return setTarget(_apCache[best].bssid, _apCache[best].channel);
+}
+
 // ─── tick() ───────────────────────────────────────────────────────────────────
 void Politician::tick() {
     _processFishing();
@@ -512,17 +551,22 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 uint16_t pmkid_cnt = ((uint16_t)rsn[off]) | ((uint16_t)rsn[off+1] << 8);
                 off += 2;
                 if (pmkid_cnt > 0 && off + 16 <= rlen) {
-                    _stats.pmkid_found++; _stats.captures++;
-                    HandshakeRecord rec; memset(&rec, 0, sizeof(rec));
-                    rec.type = CAP_PMKID; rec.channel = _rxChannel; rec.rssi = rssi;
-                    memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6);
-                    _lookupSsid(bssid, rec.ssid, rec.ssid_len);
-                    _lookupEnc(bssid, rec.enc);
-                    memcpy(rec.pmkid, rsn + off, 16);
-                    _log("[PMKID] AssocResp BSSID=%02X:%02X:%02X:%02X:%02X:%02X\n",
-                        bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
-                    _markCaptured(bssid); _markCapturedSsidGroup(rec.ssid, rec.ssid_len);
-                    if (_eapolCb) _eapolCb(rec);
+                    const uint8_t *pmkid_raw = rsn + off;
+                    bool pmkid_valid = false;
+                    for (int pi = 0; pi < 16; pi++) if (pmkid_raw[pi]) { pmkid_valid = true; break; }
+                    if (pmkid_valid) {
+                        _stats.pmkid_found++; _stats.captures++;
+                        HandshakeRecord rec; memset(&rec, 0, sizeof(rec));
+                        rec.type = CAP_PMKID; rec.channel = _rxChannel; rec.rssi = rssi;
+                        memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6);
+                        _lookupSsid(bssid, rec.ssid, rec.ssid_len);
+                        _lookupEnc(bssid, rec.enc);
+                        memcpy(rec.pmkid, pmkid_raw, 16);
+                        _log("[PMKID] AssocResp BSSID=%02X:%02X:%02X:%02X:%02X:%02X\n",
+                            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+                        _markCaptured(bssid); _markCapturedSsidGroup(rec.ssid, rec.ssid_len);
+                        if (_eapolCb) _eapolCb(rec);
+                    }
                 }
             }
             pos += 2 + tlen;
@@ -632,17 +676,22 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
             const uint8_t *kdata = key + EAPOL_KEY_DATA;
             for (uint16_t i = 0; i + 22 <= kdata_len; i++) {
                 if (kdata[i] == 0xDD && kdata[i+2] == 0x00 && kdata[i+3] == 0x0F && kdata[i+4] == 0xAC && kdata[i+5] == 0x04) {
-                    _stats.pmkid_found++; _stats.captures++;
-                    HandshakeRecord rec; memset(&rec, 0, sizeof(rec));
-                    rec.type = CAP_PMKID; rec.channel = _rxChannel; rec.rssi = rssi;
-                    memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6);
-                    memcpy(rec.ssid, sess->ssid, sizeof(sess->ssid)); rec.ssid_len = sess->ssid_len;
-                    _lookupEnc(bssid, rec.enc);
-                    memcpy(rec.pmkid, kdata + i + 6, 16);
-                    _log("[PMKID] Found for %02X:%02X:%02X:%02X:%02X:%02X\n",
-                        bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
-                    _markCaptured(bssid); _markCapturedSsidGroup(sess->ssid, sess->ssid_len);
-                    if (_eapolCb) _eapolCb(rec);
+                    const uint8_t *pmkid_raw = kdata + i + 6;
+                    bool pmkid_valid = false;
+                    for (int pi = 0; pi < 16; pi++) if (pmkid_raw[pi]) { pmkid_valid = true; break; }
+                    if (pmkid_valid) {
+                        _stats.pmkid_found++; _stats.captures++;
+                        HandshakeRecord rec; memset(&rec, 0, sizeof(rec));
+                        rec.type = CAP_PMKID; rec.channel = _rxChannel; rec.rssi = rssi;
+                        memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6);
+                        memcpy(rec.ssid, sess->ssid, sizeof(sess->ssid)); rec.ssid_len = sess->ssid_len;
+                        _lookupEnc(bssid, rec.enc);
+                        memcpy(rec.pmkid, pmkid_raw, 16);
+                        _log("[PMKID] Found for %02X:%02X:%02X:%02X:%02X:%02X\n",
+                            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+                        _markCaptured(bssid); _markCapturedSsidGroup(sess->ssid, sess->ssid_len);
+                        if (_eapolCb) _eapolCb(rec);
+                    }
                     break;
                 }
             }

@@ -138,6 +138,7 @@ struct Config {
     bool     capture_half_handshakes = false; // Fire callback on M2-only captures and pivot to active attack
     bool     skip_immune_networks   = true;  // Skip pure WPA3 / PMF-Required networks
     uint8_t  capture_filter         = LOG_FILTER_HANDSHAKES | LOG_FILTER_PROBES;
+    int8_t   min_rssi               = -100;  // Ignore APs weaker than this signal (dBm)
 };
 ```
 
@@ -160,8 +161,10 @@ bool    isAttacking() const;  // True if a PMKID/CSA attack is in progress
 bool    hasTarget()   const;  // True if focused on a specific BSSID
 uint8_t getChannel()  const;  // Current radio channel
 int8_t  getLastRssi() const;  // RSSI of the last received frame
-Stats&  getStats();           // Reference to frame counters
+Stats&  getStats();           // Reference to frame counters (captures, failures, etc.)
 void    resetStats();         // Zero all counters
+int     getApCount() const;   // Number of APs in the discovery cache
+bool    getAp(int idx, ApRecord &out) const; // Read AP from cache by index
 ```
 
 #### Target & Channel Control
@@ -174,6 +177,8 @@ Error lockChannel(uint8_t ch);                           // Stop hopping, lock c
 void  startHopping(uint16_t dwellMs = 0);                // Start channel hopping
 void  stopHopping();                                     // Stop hopping
 void  setChannelList(const uint8_t* channels, uint8_t count); // Restrict hop sequence
+void  setChannelBands(bool ghz24, bool ghz5);                // Hop 2.4GHz, 5GHz, or both
+Error setTargetBySsid(const char* ssid);                     // Lock target by SSID (picks strongest match from cache)
 ```
 
 #### Captured List
@@ -321,12 +326,14 @@ PcapngFileLogger::appendPacket(fs::FS& fs, const char* path,
 // Append handshake details to Wigle CSV
 WigleCsvLogger::append(fs::FS& fs, const char* path,
                        const HandshakeRecord& rec, float lat, float lon,
-                       float alt = 0.0, float acc = 10.0);
+                       float alt = 0.0, float acc = 10.0,
+                       const char* timestamp = nullptr);  // e.g. "2024-06-01 14:30:00"
 
 // Append any discovered AP to Wigle CSV (use with setApFoundCallback)
 WigleCsvLogger::appendAp(fs::FS& fs, const char* path,
                          const ApRecord& ap, float lat, float lon,
-                         float alt = 0.0, float acc = 10.0);
+                         float alt = 0.0, float acc = 10.0,
+                         const char* timestamp = nullptr);
 
 // Append handshake to HC22000 text file
 Hc22000FileLogger::append(fs::FS& fs, const char* path,
