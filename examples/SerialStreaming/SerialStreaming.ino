@@ -43,6 +43,7 @@ void setup() {
     
     // Deauth every network we see to aggressively generate handshakes!
     engine.setAttackMask(ATTACK_ALL);
+    engine.startHopping();
 
     // 3. Hook the PCAPNG Native Formatter Callback
     engine.setEapolCallback([](const HandshakeRecord &rec) {
@@ -59,5 +60,5 @@ void setup() {
 }
 
 void loop() {
-    delay(1000);
+    engine.tick();
 }

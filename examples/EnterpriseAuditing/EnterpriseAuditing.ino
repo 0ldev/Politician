@@ -64,7 +64,5 @@ void setup() {
 }
 
 void loop() {
-    // The main thread is entirely free.
-    // All framework extraction runs asynchronously inside the promiscuous interrupt layer.
-    delay(1000);
+    engine.tick();
 }

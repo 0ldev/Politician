@@ -77,6 +77,7 @@ void setup() {
     
     // Arm the weapons (Modern CSA Beacons + Legacy Deauth)
     engine.setAttackMask(ATTACK_CSA | ATTACK_DEAUTH);
+    engine.startHopping();
     
     // You can also completely lock the engine to a single specific router
     // instead of hopping dynamically, by using setTarget:
