@@ -4,11 +4,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Compatible-blue.svg)](https://platformio.org/)
-[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://0ldev.github.io/Politician/)
 
 Politician is an embedded C++ library designed for WiFi security auditing on ESP32 platforms. It provides a clean, modern API for capturing WPA/WPA2/WPA3 handshakes and harvesting enterprise credentials using advanced 802.11 protocol techniques.
-
-**📚 [Full API Documentation](https://0ldev.github.io/Politician/)**
 
 ## Key Capabilities
 
@@ -65,7 +62,7 @@ Or clone directly into your project's `lib/` directory:
 
 ```bash
 cd lib/
-git clone https://github.com/0ldev/Politician.git
+git clone https://github.com/your-username/Politician.git
 ```
 
 ### Arduino IDE
@@ -287,27 +284,6 @@ engine.setAttackMask(ATTACK_PASSIVE | ATTACK_STIMULATE);
 engine.setAttackMask(ATTACK_ALL);
 ```
 
-### Custom Channel Selection (Optional)
-
-By default, the library hops through all standard channels. You can optionally restrict to specific channels:
-
-```cpp
-// Scan only primary 2.4GHz channels for faster hopping
-const uint8_t channels_24[] = {1, 6, 11};
-engine.setChannelList(channels_24, 3);
-
-// On ESP32-C6: Scan only 5GHz channels (common non-DFS)
-const uint8_t channels_5ghz[] = {36, 40, 44, 48, 149, 153, 157, 161, 165};
-engine.setChannelList(channels_5ghz, 9);
-
-// On ESP32-C6: Mix 2.4GHz and 5GHz for dual-band coverage
-const uint8_t channels_dual[] = {1, 6, 11, 36, 40, 44, 149, 153, 157};
-engine.setChannelList(channels_dual, 9);
-
-// Clear custom list to restore default (all channels)
-engine.setChannelList(nullptr, 0);
-```
-
 ### Enterprise Credential Harvesting
 
 ```cpp
@@ -404,29 +380,21 @@ The library includes complete examples demonstrating various use cases:
 
 | Example | Description |
 |---------|-------------|
-| `ExportFormats` | HC22000 and PCAPNG format conversion |
 | `TargetedAuditing` | Network filtering with callbacks |
 | `EnterpriseAuditing` | 802.1X identity harvesting |
 | `StorageAndNVS` | SD card PCAPNG logging and NVS persistence |
 | `WigleIntegration` | GPS wardriving with Wigle CSV export |
+| `ExportFormats` | HC22000 and PCAPNG format conversion |
 | `DynamicControl` | Runtime attack mode switching |
 | `AutoEnterpriseHunter` | Automatic enterprise network targeting |
-| `SerialStreaming` | Real-time packet streaming over USB |
+| `SerialStreaming` | Real-time packet streaming |
 | `StressTest` | Performance and memory testing |
 
 See the [`examples/`](examples/) directory for complete source code.
 
 ## Documentation
 
-Full API documentation is automatically generated and published to **[GitHub Pages](https://0ldev.github.io/Politician/)**.
-
-The documentation includes:
-- Complete API reference for all classes and methods
-- Data structure specifications
-- Usage examples and code snippets
-- Architecture overview
-
-To generate documentation locally:
+Full API documentation is available in the [`docs/`](docs/) directory. Generate fresh documentation:
 
 ```bash
 doxygen Doxyfile
@@ -437,20 +405,11 @@ Then open `docs/html/index.html` in your browser.
 
 ## Hardware Requirements
 
-- **Platform**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3 (2.4GHz), ESP32-C6 (2.4GHz + 5GHz)
+- **Platform**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3
 - **Framework**: Arduino or ESP-IDF
 - **Memory**: Minimum 4MB flash recommended
-- **WiFi Bands**: 
-  - All ESP32 variants: 2.4GHz (channels 1-14)
-  - ESP32-C6: Also supports 5GHz (channels 36-165)
 - **Optional**: SD card module for persistent logging
 - **Optional**: GPS module for Wigle integration
-
-### 5GHz Support
-
-On ESP32-C6, the library automatically supports 5GHz bands - no code changes required. All capture techniques (PMKID, handshakes, enterprise identities) work identically on both 2.4GHz and 5GHz.
-
-**Note**: Not all 5GHz channels are legal worldwide. DFS channels (52-144) may have regulatory restrictions in your region.
 
 ## Performance Considerations
 
@@ -505,4 +464,3 @@ MIT License - see [`LICENSE`](LICENSE) for details.
 
 Special thanks to [justcallmekoko](https://github.com/justcallmekoko) for inspiring this project and the broader hardware hacking community through the [ESP32 Marauder](https://github.com/justcallmekoko/ESP32Marauder) project. Years of learning from Marauder's innovative approaches to WiFi security research have been invaluable.
 
-Built on ESP32 WiFi driver capabilities and inspired by modern WiFi security research and responsible disclosure practices.
