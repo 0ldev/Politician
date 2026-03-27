@@ -8,6 +8,7 @@ namespace politician {
 #define CAP_PMKID           0x01  // PMKID fishing (fake association)
 #define CAP_EAPOL           0x02  // Passive EAPOL (natural client reconnection)
 #define CAP_EAPOL_CSA       0x03  // EAPOL triggered by CSA beacon injection
+#define CAP_EAPOL_HALF      0x04  // M2-only capture (no anonce) — active attack pivot triggered
 
 // ─── Attack Selection Bits ────────────────────────────────────────────────────
 #define ATTACK_PMKID         0x01  // PMKID fishing
@@ -39,10 +40,6 @@ typedef void (*ApFoundCb)(const ApRecord &ap);
 typedef void (*PacketCb)(const uint8_t *payload, uint16_t len, int8_t rssi, uint32_t ts_usec);
 typedef void (*EapolCb)(const HandshakeRecord &rec);
 typedef void (*IdentityCb)(const EapIdentityRecord &rec);
-typedef bool (*TargetFilterCb)(const ApRecord &ap);
-
-// ─── Packet Logging Callback ──────────────────────────────────────────────────
-typedef void (*PacketCb)(const uint8_t *payload, uint16_t len, int8_t rssi, uint32_t timestamp_us);
 
 // ─── Error Codes ──────────────────────────────────────────────────────────────
 enum Error {
@@ -64,7 +61,7 @@ struct Config {
     uint32_t csa_wait_ms         = 4000; // How long to wait for reconnect after CSA
     uint8_t  csa_beacon_count    = 8;    // Number of CSA beacons to burst
     uint8_t  deauth_burst_count  = 16;   // Number of classic Deauth frames to send
-    uint8_t  probe_aggr_interval_s = 30; // Seconds to wait between attacking same AP
+    uint16_t probe_aggr_interval_s = 30; // Seconds to wait between attacking same AP
     uint32_t session_timeout_ms  = 60000; // How long orphaned handshakes live in RAM
     bool     capture_half_handshakes = false; // Save M2-only captures and pivot to active attack
     bool     skip_immune_networks = true; // Ignore Pure WPA3 / PMF Required networks
@@ -79,7 +76,7 @@ struct ApRecord {
     uint8_t  ssid_len;
     uint8_t  channel;
     int8_t   rssi;
-    uint8_t  enc;       // 0=open, 1=WEP, 2=WPA, 3=WPA2, 4=WPA3
+    uint8_t  enc;       // 0=open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────
@@ -103,6 +100,7 @@ struct HandshakeRecord {
     uint8_t  sta[6];
     char     ssid[33];
     uint8_t  ssid_len;
+    uint8_t  enc;           // 0=open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
     // PMKID path
     uint8_t  pmkid[16];
     // EAPOL path
@@ -113,6 +111,21 @@ struct HandshakeRecord {
     bool     has_mic;
     bool     has_anonce;
 };
+
+// ─── Attack Result ────────────────────────────────────────────────────────────
+enum AttackResult : uint8_t {
+    RESULT_PMKID_EXHAUSTED = 1, // All PMKID retries failed, no PMKID captured
+    RESULT_CSA_EXPIRED     = 2, // CSA/Deauth wait window closed, no EAPOL captured
+};
+
+struct AttackResultRecord {
+    uint8_t      bssid[6];
+    char         ssid[33];
+    uint8_t      ssid_len;
+    AttackResult result;
+};
+
+typedef void (*AttackResultCb)(const AttackResultRecord &rec);
 
 // ─── 802.1X Enterprise Identity Record ─────────────────────────────────────────
 struct EapIdentityRecord {

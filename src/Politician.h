@@ -15,7 +15,7 @@ namespace politician {
 #endif
 
 #ifndef POLITICIAN_MAX_CAPTURED
-#define POLITICIAN_MAX_CAPTURED 64
+#define POLITICIAN_MAX_CAPTURED 128
 #endif
 
 #ifndef POLITICIAN_MAX_CHANNELS
@@ -64,12 +64,8 @@ typedef struct {
 
 #define EAPOL_KEY_DESC_TYPE     0
 #define EAPOL_KEY_INFO          1
-#define EAPOL_KEY_LEN           3
 #define EAPOL_REPLAY_COUNTER    5
 #define EAPOL_KEY_NONCE        13
-#define EAPOL_KEY_IV           45
-#define EAPOL_KEY_RSC          61
-#define EAPOL_KEY_ID           69
 #define EAPOL_KEY_MIC          77
 #define EAPOL_KEY_DATA_LEN     93
 #define EAPOL_KEY_DATA         95
@@ -175,7 +171,13 @@ public:
     void    clearTarget();
 
     /** @return True if currently focusing on a specific target BSSID. */
-    bool    hasTarget() const { return _hasTarget; }
+    bool    hasTarget()    const { return _hasTarget; }
+
+    /** @return True if an active attack (PMKID fishing or CSA/Deauth) is in progress. */
+    bool    isAttacking()  const { return _fishState != FISH_IDLE; }
+
+    /** @brief Resets all frame and capture statistics to zero. */
+    void    resetStats()         { memset(&_stats, 0, sizeof(_stats)); }
 
     /** @return The current operating channel. */
     uint8_t         getChannel()  const { return _channel; }
@@ -192,11 +194,12 @@ public:
     /** @return Reference to the internal configuration struct for runtime mutations. */
     Config&         getConfig()   { return _cfg; }
 
-    using EapolCb    = void (*)(const HandshakeRecord &rec);
-    using ApFoundCb  = void (*)(const ApRecord &ap);
-    using FilterCb   = bool (*)(const ApRecord &ap);
-    using PacketCb   = void (*)(const uint8_t *payload, uint16_t len, int8_t rssi, uint32_t ts_usec);
-    using IdentityCb = void (*)(const EapIdentityRecord &rec);
+    using EapolCb          = void (*)(const HandshakeRecord &rec);
+    using ApFoundCb        = void (*)(const ApRecord &ap);
+    using TargetFilterCb   = bool (*)(const ApRecord &ap);
+    using PacketCb         = void (*)(const uint8_t *payload, uint16_t len, int8_t rssi, uint32_t ts_usec);
+    using IdentityCb       = void (*)(const EapIdentityRecord &rec);
+    using AttackResultCb   = void (*)(const AttackResultRecord &rec);
 
     /**
      * @brief Sets the callback for when a handshake (EAPOL or PMKID) is captured.
@@ -211,7 +214,7 @@ public:
     /**
      * @brief Sets an early filter callback. If it returns false, the AP is ignored completely.
      */
-    void setTargetFilter(FilterCb cb)       { _filterCb = cb; }
+    void setTargetFilter(TargetFilterCb cb) { _filterCb = cb; }
 
     /**
      * @brief Sets the callback for raw promiscuous mode packets.
@@ -222,6 +225,12 @@ public:
      * @brief Sets the callback for passive 802.1X Enterprise Identity harvesting.
      */
     void setIdentityCallback(IdentityCb cb) { _identityCb = cb; }
+
+    /**
+     * @brief Sets the callback fired when an attack attempt exhausts all options without capturing.
+     * Useful for logging failed targets or adjusting strategy at runtime.
+     */
+    void setAttackResultCallback(AttackResultCb cb) { _attackResultCb = cb; }
 
 private:
     static void IRAM_ATTR _promiscuousCb(void *buf, wifi_promiscuous_pkt_type_t type);
@@ -236,7 +245,9 @@ private:
                            const uint8_t *eapol, uint16_t len, int8_t rssi);
     void _parseSsid(const uint8_t *ie, uint16_t ie_len, char *out, uint8_t &out_len);
     uint8_t _classifyEnc(const uint8_t *ie, uint16_t ie_len);
+    bool _detectWpa3Only(const uint8_t *ie, uint16_t ie_len);
 
+    bool       _initialized = false;
     bool       _active;
     uint8_t    _channel;
     uint8_t    _rxChannel;
@@ -261,12 +272,13 @@ private:
     Config     _cfg;
     Stats      _stats;
 
-    LogCb      _logCb      = nullptr;
-    ApFoundCb  _apFoundCb  = nullptr;
-    FilterCb   _filterCb   = nullptr;
-    EapolCb    _eapolCb    = nullptr;
-    PacketCb   _packetCb   = nullptr;
-    IdentityCb _identityCb = nullptr;
+    LogCb            _logCb           = nullptr;
+    ApFoundCb        _apFoundCb       = nullptr;
+    TargetFilterCb   _filterCb        = nullptr;
+    EapolCb          _eapolCb         = nullptr;
+    PacketCb         _packetCb        = nullptr;
+    IdentityCb       _identityCb      = nullptr;
+    AttackResultCb   _attackResultCb  = nullptr;
 
     void _log(const char *fmt, ...);
 
@@ -293,6 +305,7 @@ private:
     void _cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
                   uint8_t enc, uint8_t channel, bool is_wpa3_only = false);
     bool _lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len);
+    bool _lookupEnc(const uint8_t *bssid, uint8_t &out_enc);
 
     enum FishState : uint8_t { FISH_IDLE = 0, FISH_CONNECTING = 1, FISH_CSA_WAIT = 2 };
     FishState _fishState;
@@ -312,7 +325,7 @@ private:
     void _processFishing();
     void _randomizeMac();
     void _sendCsaBurst();
-    void _sendDeauthBurst();
+    void _sendDeauthBurst(uint8_t count);
     void _markCapturedSsidGroup(const char *ssid, uint8_t ssid_len);
     void _markCaptured(const uint8_t *bssid);
 
@@ -326,6 +339,7 @@ private:
         uint8_t      channel;
         int8_t       rssi;
         uint8_t      anonce[32];
+        uint8_t      m1_replay_counter[8];
         uint8_t      mic[16];
         uint8_t      eapol_m2[256];
         uint16_t     eapol_m2_len;

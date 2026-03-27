@@ -46,7 +46,7 @@ size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max
  * @param max_len Maximum length of the buffer.
  * @return Number of bytes written, or 0 if buffer is too small.
  */
-size_t writePcapngPacket(const uint8_t* payload, size_t payload_len, int8_t rssi, uint32_t ts_usec, uint8_t* buffer, size_t max_len);
+size_t writePcapngPacket(const uint8_t* payload, size_t payload_len, int8_t rssi, uint64_t ts_usec, uint8_t* buffer, size_t max_len);
 
 } // namespace format
 } // namespace politician

