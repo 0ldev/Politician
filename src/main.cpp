@@ -21,26 +21,22 @@ void onHandshake(const HandshakeRecord &rec) {
     }
 }
 
-void onApFound(const ApRecord &ap) { }
-
 void setup() {
     Serial.begin(115200);
     delay(1000);
     Serial.println("\n--- Politician Library Example ---");
 
     engine.setEapolCallback(onHandshake);
-    engine.setApFoundCallback(onApFound);
 
     Config cfg;
     cfg.hop_dwell_ms = 250;
-    
+
     if (engine.begin(cfg) != politician::OK) {
         Serial.println("WiFi Init Failed!");
         while(1) delay(100);
     }
-    
+
     engine.startHopping();
-    engine.setActive(true);
     engine.setAttackMask(ATTACK_ALL);
 
     Serial.println("Wardriving started...");

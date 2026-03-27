@@ -246,11 +246,12 @@ void Politician::tick() {
     uint32_t nowDiag = millis();
     if (nowDiag - lastDiagMs >= 30000) {
         lastDiagMs = nowDiag;
-        _log("[Stats] total=%lu mgmt=%lu data=%lu eapol=%lu pmkid=%lu caps=%lu aps=%d lock=%s\n",
+        _log("[Stats] total=%lu mgmt=%lu data=%lu eapol=%lu pmkid=%lu caps=%lu fail_pmkid=%lu fail_csa=%lu aps=%d lock=%s\n",
             (unsigned long)_stats.total, (unsigned long)_stats.mgmt,
             (unsigned long)_stats.data,  (unsigned long)_stats.eapol,
             (unsigned long)_stats.pmkid_found, (unsigned long)_stats.captures,
-            _apCacheCount,
+            (unsigned long)_stats.failed_pmkid, (unsigned long)_stats.failed_csa,
+            getApCount(),
             _probeLocked ? "probe" : _m1Locked ? "m1" : "none");
     }
 

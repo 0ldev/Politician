@@ -147,7 +147,7 @@ public:
         if (!file) return false;
 
         char line[256];
-        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%s,%s,%s,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
+        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,\"%s\",%s,%s,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
                  rec.bssid[0], rec.bssid[1], rec.bssid[2], rec.bssid[3], rec.bssid[4], rec.bssid[5],
                  rec.ssid, _authStr(rec.enc), timestamp ? timestamp : "1970-01-01 00:00:00",
                  rec.channel, rec.rssi, lat, lon, alt, acc);
@@ -178,7 +178,7 @@ public:
         if (!file) return false;
 
         char line[256];
-        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%s,%s,%s,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
+        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,\"%s\",%s,%s,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
                  ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5],
                  ap.ssid, _authStr(ap.enc), timestamp ? timestamp : "1970-01-01 00:00:00",
                  ap.channel, ap.rssi, lat, lon, alt, acc);
@@ -232,8 +232,8 @@ public:
             file.println("Enterprise BSSID,Client MAC,Plaintext Identity,Channel,RSSI");
         }
 
-        char line[128];
-        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%02X:%02X:%02X:%02X:%02X:%02X,%s,%d,%d",
+        char line[160];
+        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%02X:%02X:%02X:%02X:%02X:%02X,\"%s\",%d,%d",
                  rec.bssid[0], rec.bssid[1], rec.bssid[2], rec.bssid[3], rec.bssid[4], rec.bssid[5],
                  rec.client[0], rec.client[1], rec.client[2], rec.client[3], rec.client[4], rec.client[5],
                  rec.identity, rec.channel, rec.rssi);
