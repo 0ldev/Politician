@@ -139,6 +139,10 @@ struct Config {
     bool     skip_immune_networks   = true;  // Skip pure WPA3 / PMF-Required networks
     uint8_t  capture_filter         = LOG_FILTER_HANDSHAKES | LOG_FILTER_PROBES;
     int8_t   min_rssi               = -100;  // Ignore APs weaker than this signal (dBm)
+    uint32_t ap_expiry_ms           = 300000; // Evict APs not seen for this long (0 = never expire)
+    bool     unicast_deauth         = true;  // Send deauth to known client MAC instead of broadcast
+    uint32_t probe_hidden_interval_ms = 0;     // How often to probe hidden APs for SSID (0 = disabled, opt-in)
+    uint8_t  deauth_reason          = 7;     // 802.11 reason code in deauth frames
 };
 ```
 
@@ -179,6 +183,7 @@ void  stopHopping();                                     // Stop hopping
 void  setChannelList(const uint8_t* channels, uint8_t count); // Restrict hop sequence
 void  setChannelBands(bool ghz24, bool ghz5);                // Hop 2.4GHz, 5GHz, or both
 Error setTargetBySsid(const char* ssid);                     // Lock target by SSID (picks strongest match from cache)
+void  setAutoTarget(bool enable);                            // Continuously auto-target strongest uncaptured AP
 ```
 
 #### Captured List

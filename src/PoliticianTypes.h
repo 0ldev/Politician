@@ -69,6 +69,10 @@ struct Config {
     uint8_t  csa_deauth_count    = 15;   // Number of standard deauths to append
     uint8_t  capture_filter      = LOG_FILTER_HANDSHAKES | LOG_FILTER_PROBES; // Exclude Beacons by default to save SD storage
     int8_t   min_rssi            = -100; // Ignore APs with signal weaker than this (dBm)
+    uint32_t ap_expiry_ms        = 300000; // Evict APs not seen for this long (0 = never expire)
+    bool     unicast_deauth      = true;  // Send deauth to known client MAC instead of broadcast
+    uint32_t probe_hidden_interval_ms = 0;     // How often to probe hidden APs for SSID (0 = disabled, opt-in)
+    uint8_t  deauth_reason       = 7;    // 802.11 reason code for deauth frames (7=Class 3 from non-assoc)
 };
 
 // ─── AP Record ────────────────────────────────────────────────────────────────

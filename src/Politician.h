@@ -193,6 +193,13 @@ public:
     /** @return True if an active attack (PMKID fishing or CSA/Deauth) is in progress. */
     bool    isAttacking()  const { return _fishState != FISH_IDLE; }
 
+    /**
+     * @brief Continuously locks onto the strongest uncaptured AP in the cache.
+     * After each attack attempt (success or failure), automatically moves to the next best target.
+     * @param enable True to enable, false to disable and resume normal hopping.
+     */
+    void    setAutoTarget(bool enable);
+
     /** @brief Resets all frame and capture statistics to zero. */
     void    resetStats()         { memset(&_stats, 0, sizeof(_stats)); }
 
@@ -300,6 +307,9 @@ private:
     Config     _cfg;
     Stats      _stats;
 
+    bool             _autoTarget       = false;
+    bool             _autoTargetActive = false;
+
     LogCb            _logCb           = nullptr;
     ApFoundCb        _apFoundCb       = nullptr;
     TargetFilterCb   _filterCb        = nullptr;
@@ -323,10 +333,15 @@ private:
         uint8_t  enc;
         uint8_t  channel;
         int8_t   rssi;
+        uint32_t last_seen_ms;
         uint32_t last_probe_ms;
         uint32_t last_stimulate_ms;
+        uint32_t last_hidden_probe_ms;  // Timestamp of last directed probe for hidden SSID
         bool     has_active_clients;
-        bool     is_wpa3_only;  // True if PMF is required and no WPA2 AKM offered
+        bool     is_wpa3_only;          // True if PMF is required and no WPA2 AKM offered
+        bool     is_hidden;             // True if SSID is blank
+        uint8_t  known_stas[4][6];      // Up to 4 persistently tracked client MACs
+        uint8_t  known_sta_count;
     };
     ApCacheEntry _apCache[MAX_AP_CACHE];
     int          _apCacheCount;
@@ -344,6 +359,7 @@ private:
     char      _fishSsid[33];
     uint8_t   _fishSsidLen;
     uint8_t   _fishChannel;
+    uint8_t   _fishSta[6];     // Known client MAC for unicast deauth (zeros = unknown)
     uint8_t   _ownStaMac[6];
     bool      _fishAuthLogged;
     bool      _fishAssocLogged;
@@ -354,7 +370,9 @@ private:
     void _processFishing();
     void _randomizeMac();
     void _sendCsaBurst();
-    void _sendDeauthBurst(uint8_t count);
+    void _sendDeauthBurst(uint8_t count, const uint8_t *sta = nullptr);
+    void _sendProbeRequest(const uint8_t *bssid);
+    void _recordClientForAp(const uint8_t *bssid, const uint8_t *sta);
     void _markCapturedSsidGroup(const char *ssid, uint8_t ssid_len);
     void _markCaptured(const uint8_t *bssid);
 
