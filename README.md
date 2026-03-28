@@ -179,7 +179,8 @@ void  clearTarget();                                     // Resume autonomous op
 Error setChannel(uint8_t ch);                            // Tune to a specific channel
 Error lockChannel(uint8_t ch);                           // Stop hopping, lock channel
 void  startHopping(uint16_t dwellMs = 0);                // Start channel hopping
-void  stopHopping();                                     // Stop hopping
+void  stopHopping();                                     // Stop hopping (attack state machine continues)
+void  stop();                                            // Full teardown: abort attack, clear target, stop hopping, disable capture
 void  setChannelList(const uint8_t* channels, uint8_t count); // Restrict hop sequence
 void  setChannelBands(bool ghz24, bool ghz5);                // Hop 2.4GHz, 5GHz, or both
 Error setTargetBySsid(const char* ssid);                     // Lock target by SSID (picks strongest match from cache)

@@ -138,6 +138,13 @@ public:
     void    stopHopping();
 
     /**
+     * @brief Full engine teardown. Aborts any in-progress attack, clears the
+     *        target, stops hopping, and disables frame processing in one call.
+     *        Use this instead of combining stopHopping() + clearTarget() + setActive(false).
+     */
+    void    stop();
+
+    /**
      * @brief Stops hopping and locks the radio to a specific channel.
      * @return OK on success, or an error code.
      */

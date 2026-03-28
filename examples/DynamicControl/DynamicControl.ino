@@ -25,6 +25,8 @@ void setup() {
     Serial.println("Type 'W' to interact ONLY with WPA2/3 networks.");
     Serial.println("Type 'F' to toggle PCAPNG Capture Filter (Intel vs Handshakes).");
     Serial.println("Type 'I' to toggle WPA3 Immunity Skipping.");
+    Serial.println("Type 'S' to stop the engine (full teardown).");
+    Serial.println("Type 'R' to resume after a stop.");
     Serial.println("===========================================\n");
 
     engine.setLogger([](const char* msg) { Serial.print(msg); });
@@ -100,8 +102,17 @@ void loop() {
 
         } else if (c == 'I' || c == 'i') {
             engine.getConfig().skip_immune_networks = !engine.getConfig().skip_immune_networks;
-            Serial.printf("\n[UI] WPA3 Immunity Skipping is now: %s\n", 
+            Serial.printf("\n[UI] WPA3 Immunity Skipping is now: %s\n",
                 engine.getConfig().skip_immune_networks ? "ENABLED" : "DISABLED");
+
+        } else if (c == 'S' || c == 's') {
+            Serial.println("\n[UI] Full engine stop. Press 'R' to resume.");
+            engine.stop();
+
+        } else if (c == 'R' || c == 'r') {
+            Serial.println("\n[UI] Resuming — passive wardriving mode.");
+            engine.setAttackMask(ATTACK_PASSIVE);
+            engine.startHopping();
         }
     }
 }

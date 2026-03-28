@@ -181,6 +181,21 @@ void Politician::stopHopping() {
     _hopping = false;
 }
 
+void Politician::stop() {
+    if (_fishState != FISH_IDLE) {
+        esp_wifi_disconnect();
+        _fishState = FISH_IDLE;
+    }
+    _hopping          = false;
+    _hasTarget        = false;
+    _autoTarget       = false;
+    _autoTargetActive = false;
+    _m1Locked         = false;
+    _probeLocked      = false;
+    _active           = false;
+    _log("[WiFi] Engine stopped\n");
+}
+
 // ─── Attack mask ──────────────────────────────────────────────────────────────
 void Politician::setAttackMask(uint8_t mask) {
     _attackMask = mask;
