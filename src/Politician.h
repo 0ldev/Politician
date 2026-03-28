@@ -54,6 +54,7 @@ typedef struct {
 #define MGMT_SUB_PROBE_RESP 0x50
 #define MGMT_SUB_BEACON     0x80
 #define MGMT_SUB_AUTH_RESP  0xB0
+#define MGMT_SUB_DISASSOC   0xA0
 #define MGMT_SUB_DEAUTH     0xC0
 
 // ─── EAPOL ────────────────────────────────────────────────────────────────────
@@ -242,6 +243,8 @@ public:
     using PacketCb         = void (*)(const uint8_t *payload, uint16_t len, int8_t rssi, uint32_t ts_usec);
     using IdentityCb       = void (*)(const EapIdentityRecord &rec);
     using AttackResultCb   = void (*)(const AttackResultRecord &rec);
+    using ProbeRequestCb   = void (*)(const ProbeRequestRecord &rec);
+    using DisruptCb        = void (*)(const DisruptRecord &rec);
 
     /**
      * @brief Sets the callback for when a handshake (EAPOL or PMKID) is captured.
@@ -273,6 +276,18 @@ public:
      * Useful for logging failed targets or adjusting strategy at runtime.
      */
     void setAttackResultCallback(AttackResultCb cb) { _attackResultCb = cb; }
+
+    /**
+     * @brief Sets the callback fired on every probe request frame.
+     * Exposes the probing client MAC and requested SSID for device history reconstruction.
+     */
+    void setProbeRequestCallback(ProbeRequestCb cb) { _probeReqCb = cb; }
+
+    /**
+     * @brief Sets the callback fired on deauthentication and disassociation frames.
+     * Exposes source, destination, BSSID, reason code, and direction for attack/roaming detection.
+     */
+    void setDisruptCallback(DisruptCb cb)           { _disruptCb = cb; }
 
 private:
     static void IRAM_ATTR _promiscuousCb(void *buf, wifi_promiscuous_pkt_type_t type);
@@ -324,6 +339,8 @@ private:
     PacketCb         _packetCb        = nullptr;
     IdentityCb       _identityCb      = nullptr;
     AttackResultCb   _attackResultCb  = nullptr;
+    ProbeRequestCb   _probeReqCb      = nullptr;
+    DisruptCb        _disruptCb       = nullptr;
 
     void _log(const char *fmt, ...);
 
@@ -349,6 +366,8 @@ private:
         bool     is_hidden;             // True if SSID is blank
         uint8_t  known_stas[4][6];      // Up to 4 persistently tracked client MACs
         uint8_t  known_sta_count;
+        uint8_t  beacon_count;          // Times this AP has been observed
+        uint8_t  total_attempts;        // Total failed attack attempts against this AP
     };
     ApCacheEntry _apCache[MAX_AP_CACHE];
     int          _apCacheCount;

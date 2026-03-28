@@ -141,20 +141,32 @@ struct Config {
     int8_t   min_rssi               = -100;  // Ignore APs weaker than this signal (dBm)
     uint32_t ap_expiry_ms           = 300000; // Evict APs not seen for this long (0 = never expire)
     bool     unicast_deauth         = true;  // Send deauth to known client MAC instead of broadcast
-    uint32_t probe_hidden_interval_ms = 0;     // How often to probe hidden APs for SSID (0 = disabled, opt-in)
+    uint32_t probe_hidden_interval_ms = 0;   // How often to probe hidden APs for SSID (0 = disabled, opt-in)
     uint8_t  deauth_reason          = 7;     // 802.11 reason code in deauth frames
+    // ── Frame capture
+    bool     capture_group_keys     = false; // Fire eapolCb(CAP_EAPOL_GROUP) on GTK rotation frames
+    // ── Filtering
+    uint8_t  min_beacon_count       = 0;     // Min times AP must be seen before attack/apFoundCb (0 = off)
+    uint8_t  max_total_attempts     = 0;     // Permanently skip BSSID after N failed attacks (0 = unlimited)
+    uint8_t  sta_filter[6]          = {};    // Only record EAPOL from this client MAC (zero = no filter)
+    char     ssid_filter[33]        = {};    // Only cache APs matching this SSID (empty = no filter)
+    bool     ssid_filter_exact      = true;  // True = exact match, false = substring match
+    uint8_t  enc_filter_mask        = 0xFF;  // Bitmask of enc types to cache (bit N = enc type N, 0xFF = all)
+    bool     require_active_clients = false; // Skip attack initiation if no active clients seen on AP
 };
 ```
 
 #### Callbacks
 
 ```cpp
-void setEapolCallback(EapolCb cb);              // Handshake captured (EAPOL or PMKID)
-void setApFoundCallback(ApFoundCb cb);          // New AP discovered
+void setEapolCallback(EapolCb cb);              // Handshake captured (EAPOL, PMKID, or group key)
+void setApFoundCallback(ApFoundCb cb);          // New AP discovered (respects min_beacon_count)
 void setIdentityCallback(IdentityCb cb);        // 802.1X EAP-Identity harvested
 void setAttackResultCallback(AttackResultCb cb);// Attack exhausted without capturing
 void setTargetFilter(TargetFilterCb cb);        // Early filter — return false to ignore AP
 void setPacketLogger(PacketCb cb);              // Raw promiscuous-mode frames
+void setProbeRequestCallback(ProbeRequestCb cb);// Probe request received (client device history)
+void setDisruptCallback(DisruptCb cb);          // Deauth/Disassoc frame received
 ```
 
 #### State & Stats
@@ -224,10 +236,12 @@ void setAttackMask(uint8_t mask);  // Configure active attack vectors (bitmask)
 #### Capture Filter Constants
 
 ```cpp
-#define LOG_FILTER_HANDSHAKES 0x01  // EAPOLs and PMKIDs (SPI-safe)
-#define LOG_FILTER_PROBES     0x02  // Probe requests and responses (SPI-safe)
-#define LOG_FILTER_BEACONS    0x04  // Beacons — high volume, SDMMC only
-#define LOG_FILTER_ALL        0xFF  // Everything — SDMMC only
+#define LOG_FILTER_HANDSHAKES   0x01  // EAPOLs and PMKIDs (SPI-safe)
+#define LOG_FILTER_PROBES       0x02  // Probe requests and responses (SPI-safe)
+#define LOG_FILTER_BEACONS      0x04  // Beacons — high volume, SDMMC only
+#define LOG_FILTER_PROBE_REQ    0x08  // Probe requests as raw EPBs (SPI-safe)
+#define LOG_FILTER_MGMT_DISRUPT 0x10  // Deauth/Disassoc frames as raw EPBs (SPI-safe)
+#define LOG_FILTER_ALL          0xFF  // Everything — SDMMC only
 ```
 
 ### Data Structures

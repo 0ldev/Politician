@@ -9,6 +9,7 @@ namespace politician {
 #define CAP_EAPOL           0x02  // Passive EAPOL (natural client reconnection)
 #define CAP_EAPOL_CSA       0x03  // EAPOL triggered by CSA beacon injection
 #define CAP_EAPOL_HALF      0x04  // M2-only capture (no anonce) — active attack pivot triggered
+#define CAP_EAPOL_GROUP     0x05  // Non-pairwise EAPOL-Key (GTK rotation)
 
 // ─── Attack Selection Bits ────────────────────────────────────────────────────
 #define ATTACK_PMKID         0x01  // PMKID fishing
@@ -26,6 +27,8 @@ namespace politician {
 #define LOG_FILTER_HANDSHAKES  0x01 // EAPOLs, PMKIDs (Crackable info, SPI Safe)
 #define LOG_FILTER_PROBES      0x02 // Probe Requests & Responses (Scouting, SPI Safe)
 #define LOG_FILTER_BEACONS     0x04 // Beacons (Network Mapping, SDMMC ONLY!)
+#define LOG_FILTER_PROBE_REQ   0x08 // Probe Requests as raw EPBs (Client Device History, SPI Safe)
+#define LOG_FILTER_MGMT_DISRUPT 0x10 // Deauth/Disassoc frames as raw EPBs (Attack Detection, SPI Safe)
 #define LOG_FILTER_ALL         0xFF // Everything (SDMMC ONLY!)
 
 // ─── Logging Callback ─────────────────────────────────────────────────────────
@@ -35,11 +38,15 @@ typedef void (*LogCb)(const char *msg);
 struct ApRecord;
 struct HandshakeRecord;
 struct EapIdentityRecord;
+struct ProbeRequestRecord;
+struct DisruptRecord;
 
 typedef void (*ApFoundCb)(const ApRecord &ap);
 typedef void (*PacketCb)(const uint8_t *payload, uint16_t len, int8_t rssi, uint32_t ts_usec);
 typedef void (*EapolCb)(const HandshakeRecord &rec);
 typedef void (*IdentityCb)(const EapIdentityRecord &rec);
+typedef void (*ProbeRequestCb)(const ProbeRequestRecord &rec);
+typedef void (*DisruptCb)(const DisruptRecord &rec);
 
 // ─── Error Codes ──────────────────────────────────────────────────────────────
 enum Error {
@@ -73,6 +80,14 @@ struct Config {
     bool     unicast_deauth      = true;  // Send deauth to known client MAC instead of broadcast
     uint32_t probe_hidden_interval_ms = 0;     // How often to probe hidden APs for SSID (0 = disabled, opt-in)
     uint8_t  deauth_reason       = 7;    // 802.11 reason code for deauth frames (7=Class 3 from non-assoc)
+    bool     capture_group_keys  = false; // Fire eapolCb with CAP_EAPOL_GROUP on GTK rotation frames
+    uint8_t  min_beacon_count    = 0;    // Min times AP must be seen before attack/apFoundCb (0 = no minimum)
+    uint8_t  max_total_attempts  = 0;    // Permanently skip BSSID after this many failed attacks (0 = unlimited)
+    uint8_t  sta_filter[6]       = {};   // Only record EAPOL sessions from this client MAC (zero = no filter)
+    char     ssid_filter[33]     = {};   // Only cache APs matching this SSID (empty = no filter)
+    bool     ssid_filter_exact   = true; // True = exact SSID match, false = substring match
+    uint8_t  enc_filter_mask     = 0xFF; // Bitmask of enc types to cache: bit0=open,1=WEP,2=WPA,3=WPA2/3,4=Ent
+    bool     require_active_clients = false; // Skip attack initiation if no active clients seen on AP
 };
 
 // ─── AP Record ────────────────────────────────────────────────────────────────
@@ -140,6 +155,26 @@ struct EapIdentityRecord {
     uint8_t  bssid[6];      // Access Point MAC
     uint8_t  client[6];     // Enterprise Client MAC
     char     identity[65];  // The Plaintext Identity / Email Address
+    uint8_t  channel;
+    int8_t   rssi;
+};
+
+// ─── Probe Request Record ─────────────────────────────────────────────────────
+struct ProbeRequestRecord {
+    uint8_t  client[6];     // Probing device MAC
+    uint8_t  channel;
+    int8_t   rssi;
+    char     ssid[33];      // Requested SSID (empty = wildcard probe)
+    uint8_t  ssid_len;
+};
+
+// ─── Disruption Record ────────────────────────────────────────────────────────
+struct DisruptRecord {
+    uint8_t  src[6];        // Frame source MAC
+    uint8_t  dst[6];        // Frame destination MAC
+    uint8_t  bssid[6];      // BSSID (addr3)
+    uint16_t reason;        // 802.11 reason code
+    uint8_t  subtype;       // MGMT_SUB_DEAUTH (0xC0) or MGMT_SUB_DISASSOC (0xA0)
     uint8_t  channel;
     int8_t   rssi;
 };
