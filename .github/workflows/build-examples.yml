@@ -34,6 +34,6 @@ jobs:
             pio ci "$ino" \
               --lib=src \
               --board=${{ matrix.board }} \
-              --project-option="platform=espressif32@~4.4.0" \
+              --project-option="platform=espressif32@~6.4.0" \
               --project-option="framework=arduino"
           done
