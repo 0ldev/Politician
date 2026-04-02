@@ -882,6 +882,14 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
                 sess->active = false;
                 return true;
             }
+            uint32_t now_cap = millis();
+            if (memcmp(bssid, _lastCapBssid, 6) == 0 && memcmp(sta, _lastCapSta, 6) == 0 &&
+                (now_cap - _lastCapMs) < _cfg.session_timeout_ms) {
+                _log("[EAPOL] Duplicate capture for %02X:%02X:%02X:%02X:%02X:%02X — skipping\n",
+                    bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+                sess->active = false;
+                return true;
+            }
             HandshakeRecord rec; memset(&rec, 0, sizeof(rec));
             rec.type = (_fishState == FISH_CSA_WAIT) ? CAP_EAPOL_CSA : CAP_EAPOL;
             rec.channel = sess->channel; rec.rssi = sess->rssi;
@@ -892,6 +900,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
             _log("[EAPOL] Complete M1+M2 for %02X:%02X:%02X:%02X:%02X:%02X SSID=%s\n",
                 bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5], sess->ssid);
             _stats.captures++; _m1Locked = false;
+            memcpy(_lastCapBssid, bssid, 6); memcpy(_lastCapSta, sta, 6); _lastCapMs = now_cap;
             _markCaptured(bssid); _markCapturedSsidGroup(sess->ssid, sess->ssid_len);
             if (_eapolCb) _eapolCb(rec);
             sess->active = false;

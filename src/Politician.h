@@ -332,6 +332,10 @@ private:
     bool             _autoTarget       = false;
     bool             _autoTargetActive = false;
 
+    uint8_t          _lastCapBssid[6]  = {};
+    uint8_t          _lastCapSta[6]    = {};
+    uint32_t         _lastCapMs        = 0;
+
     LogCb            _logCb           = nullptr;
     ApFoundCb        _apFoundCb       = nullptr;
     TargetFilterCb   _filterCb        = nullptr;
