@@ -180,9 +180,21 @@ public:
     void    tick();
 
     /**
-     * @brief Configures which attack techniques are enabled.
+     * @brief Configures which attack techniques are enabled globally.
      */
     void    setAttackMask(uint8_t mask);
+
+    /**
+     * @brief Overrides the attack mask for a specific BSSID.
+     * When the engine targets this BSSID the override mask is used instead of the global mask.
+     * The override table holds up to 8 entries; oldest is evicted if full.
+     */
+    void    setAttackMaskForBssid(const uint8_t *bssid, uint8_t mask);
+
+    /**
+     * @brief Clears all per-BSSID attack mask overrides.
+     */
+    void    clearAttackMaskOverrides();
 
     /**
      * @brief Focuses the engine on a single BSSID.
@@ -329,6 +341,11 @@ private:
     int8_t     _lastRssi;
     uint8_t    _hopIndex;
     uint8_t    _attackMask;
+
+    static const int MAX_ATTACK_OVERRIDES = 8;
+    struct AttackOverride { bool active; uint8_t bssid[6]; uint8_t mask; };
+    AttackOverride _attackOverrides[MAX_ATTACK_OVERRIDES];
+    uint8_t _getAttackMask(const uint8_t *bssid) const;
 
     bool       _hasTarget;
     uint8_t    _targetBssid[6];

