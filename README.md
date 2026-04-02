@@ -15,7 +15,7 @@ Politician is an embedded C++ library designed for WiFi security auditing on ESP
 - **Hidden Network Discovery**: Automatic SSID decloaking via probe response interception
 - **Client Stimulation**: Wake sleeping mobile devices using QoS Null Data frames
 - **WPA3/PMF Detection**: Intelligent filtering to skip Protected Management Frame-enabled networks
-- **Export Formats**: PCAPNG and Hashcat HC22000 output support
+- **Export Formats**: PCAPNG capture files; optional HC22000 text export for direct Hashcat ingestion
 
 ## Architecture
 
@@ -26,7 +26,7 @@ The library is built around a non-blocking state machine that manages channel ho
 | Component | Description |
 |-----------|-------------|
 | `Politician` | Main engine class managing the audit lifecycle |
-| `PoliticianFormat` | PCAPNG and Hashcat export utilities |
+| `PoliticianFormat` | PCAPNG capture serialization; auxiliary HC22000 text export |
 | `PoliticianStorage` | Optional SD card logging and NVS persistence |
 | `PoliticianStress` | Decoupled DoS/disruption payload delivery (opt-in) |
 | `PoliticianTypes` | Core data structures and enumerations |
@@ -78,28 +78,30 @@ git clone https://github.com/0ldev/Politician.git
 
 ```cpp
 #include <Arduino.h>
+#include <SD.h>
 #include <Politician.h>
-#include <PoliticianFormat.h>
+#include <PoliticianStorage.h>
 
 using namespace politician;
-using namespace politician::format;
+using namespace politician::storage;
 
 Politician engine;
 
 void onHandshake(const HandshakeRecord &rec) {
-    Serial.printf("\n[✓] Captured handshake: %s\n", rec.ssid);
-    Serial.printf("HC22000: %s\n", toHC22000(rec).c_str());
+    Serial.printf("\n[✓] Captured: %s  ch%d  rssi=%d  type=%d\n",
+                  rec.ssid, rec.channel, rec.rssi, rec.type);
+    // Primary output: PCAPNG — open in Wireshark or convert with hcxpcapngtool
+    PcapngFileLogger::append(SD, "/captures.pcapng", rec);
 }
 
 void setup() {
     Serial.begin(115200);
-    
+    SD.begin();
+
     engine.setEapolCallback(onHandshake);
-    
+
     Config cfg;
-    cfg.capture_filter = LOG_FILTER_HANDSHAKES | LOG_FILTER_PROBES;
     engine.begin(cfg);
-    
     engine.setAttackMask(ATTACK_ALL);
 }
 
@@ -333,8 +335,10 @@ struct AttackResultRecord {
 
 ### Format Utilities
 
+PCAPNG is the primary capture format — it is tool-agnostic, preserves full frame context, and can be opened in Wireshark or piped through `hcxpcapngtool`. HC22000 is an auxiliary text export for users who want to feed captures directly into `hashcat` without an intermediate conversion step.
+
 ```cpp
-// Convert a HandshakeRecord to a Hashcat-compatible HC22000 string
+// Convert a HandshakeRecord to an HC22000 string (auxiliary — use PCAPNG as the primary output)
 String toHC22000(const HandshakeRecord& rec);
 
 // Write PCAPNG global header (SHB + IDB) — call once at file start
@@ -571,7 +575,7 @@ The library includes complete examples demonstrating various use cases:
 | `EnterpriseAuditing` | 802.1X identity harvesting |
 | `StorageAndNVS` | SD card PCAPNG logging and NVS persistence |
 | `WigleIntegration` | GPS wardriving with Wigle CSV export |
-| `ExportFormats` | HC22000 and PCAPNG format conversion |
+| `ExportFormats` | PCAPNG capture and auxiliary HC22000 text export |
 | `DynamicControl` | Runtime attack mode switching |
 | `AutoEnterpriseHunter` | Automatic enterprise network targeting |
 | `SerialStreaming` | Real-time packet streaming |
