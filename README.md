@@ -303,8 +303,10 @@ struct ApRecord {
     int8_t  rssi;
     uint8_t enc;           // 0=Open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
     bool    wps_enabled;   // WPS IE detected in beacon/probe-response
-    bool    pmf_capable;   // MFPC — AP supports Protected Management Frames
-    bool    pmf_required;  // MFPR — AP mandates PMF (pure WPA3 / PMF-Required)
+    bool    pmf_capable;     // MFPC — AP supports Protected Management Frames
+    bool    pmf_required;    // MFPR — AP mandates PMF (pure WPA3 / PMF-Required)
+    uint8_t total_attempts;  // Failed attack attempts against this BSSID
+    bool    captured;        // True if BSSID is on the captured or ignore list
 };
 ```
 

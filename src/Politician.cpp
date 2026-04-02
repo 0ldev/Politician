@@ -1217,9 +1217,11 @@ bool Politician::getAp(int idx, ApRecord &out) const {
             out.enc         = _apCache[i].enc;
             out.channel     = _apCache[i].channel;
             out.rssi        = _apCache[i].rssi;
-            out.wps_enabled  = _apCache[i].wps_enabled;
-            out.pmf_capable  = _apCache[i].pmf_capable;
-            out.pmf_required = _apCache[i].pmf_required;
+            out.wps_enabled    = _apCache[i].wps_enabled;
+            out.pmf_capable    = _apCache[i].pmf_capable;
+            out.pmf_required   = _apCache[i].pmf_required;
+            out.total_attempts = _apCache[i].total_attempts;
+            out.captured       = _isCaptured(_apCache[i].bssid);
             return true;
         }
         found++;
