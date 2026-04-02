@@ -168,6 +168,7 @@ void setTargetFilter(TargetFilterCb cb);        // Early filter — return false
 void setPacketLogger(PacketCb cb);              // Raw promiscuous-mode frames
 void setProbeRequestCallback(ProbeRequestCb cb);// Probe request received (client device history)
 void setDisruptCallback(DisruptCb cb);          // Deauth/Disassoc frame received
+void setClientFoundCallback(ClientFoundCb cb);  // New client STA seen associated to an AP
 ```
 
 #### State & Stats

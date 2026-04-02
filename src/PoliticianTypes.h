@@ -154,6 +154,7 @@ struct AttackResultRecord {
 };
 
 typedef void (*AttackResultCb)(const AttackResultRecord &rec);
+typedef void (*ClientFoundCb)(const uint8_t *bssid, const uint8_t *sta, int8_t rssi);
 
 // ─── 802.1X Enterprise Identity Record ─────────────────────────────────────────
 struct EapIdentityRecord {

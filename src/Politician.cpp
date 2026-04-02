@@ -298,14 +298,16 @@ void Politician::setAutoTarget(bool enable) {
     _log("[AutoTarget] %s\n", enable ? "enabled" : "disabled");
 }
 
-void Politician::_recordClientForAp(const uint8_t *bssid, const uint8_t *sta) {
+void Politician::_recordClientForAp(const uint8_t *bssid, const uint8_t *sta, int8_t rssi) {
     for (int i = 0; i < MAX_AP_CACHE; i++) {
         if (!_apCache[i].active || memcmp(_apCache[i].bssid, bssid, 6) != 0) continue;
         _apCache[i].has_active_clients = true;
         for (int j = 0; j < _apCache[i].known_sta_count; j++)
             if (memcmp(_apCache[i].known_stas[j], sta, 6) == 0) return;
-        if (_apCache[i].known_sta_count < 4)
+        if (_apCache[i].known_sta_count < 4) {
             memcpy(_apCache[i].known_stas[_apCache[i].known_sta_count++], sta, 6);
+            if (_clientFoundCb) _clientFoundCb(bssid, sta, rssi);
+        }
         return;
     }
 }
@@ -677,7 +679,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             // ----------------------------------
         }
     } else if (subtype == MGMT_SUB_ASSOC_REQ) {
-        _recordClientForAp(hdr->addr1, hdr->addr2);
+        _recordClientForAp(hdr->addr1, hdr->addr2, rssi);
     } else if (subtype == MGMT_SUB_AUTH_RESP) {
         if (len >= 6 && !_fishAuthLogged) {
             uint16_t auth_seq = ((uint16_t)payload[2]) | ((uint16_t)payload[3] << 8);
@@ -823,7 +825,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
         msg, bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5], _rxChannel, rssi);
 
     if (msg == 3 || msg == 4) {
-        _recordClientForAp(bssid, sta);
+        _recordClientForAp(bssid, sta, rssi);
         for (int i = 0; i < MAX_AP_CACHE; i++) {
             if (_apCache[i].active && memcmp(_apCache[i].bssid, bssid, 6) == 0) {
                 if (_apCache[i].known_sta_count == 1 && !_apCache[i].has_active_clients) {
@@ -893,7 +895,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
         
         bool is_new_m2 = !sess->has_m2;
         sess->has_m2 = true;
-        _recordClientForAp(bssid, sta);
+        _recordClientForAp(bssid, sta, rssi);
 
         if (sess->has_m1) {
             static const uint8_t zero_mic[16] = {};

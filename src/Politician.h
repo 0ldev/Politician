@@ -253,6 +253,7 @@ public:
     using AttackResultCb   = void (*)(const AttackResultRecord &rec);
     using ProbeRequestCb   = void (*)(const ProbeRequestRecord &rec);
     using DisruptCb        = void (*)(const DisruptRecord &rec);
+    using ClientFoundCb    = void (*)(const uint8_t *bssid, const uint8_t *sta, int8_t rssi);
 
     /**
      * @brief Sets the callback for when a handshake (EAPOL or PMKID) is captured.
@@ -296,6 +297,12 @@ public:
      * Exposes source, destination, BSSID, reason code, and direction for attack/roaming detection.
      */
     void setDisruptCallback(DisruptCb cb)           { _disruptCb = cb; }
+
+    /**
+     * @brief Sets the callback fired when a new client (STA) is first seen associated to an AP.
+     * Fired at most once per unique BSSID+STA pair (tracked per AP cache entry, up to 4 clients).
+     */
+    void setClientFoundCallback(ClientFoundCb cb)   { _clientFoundCb = cb; }
 
 private:
     static void IRAM_ATTR _promiscuousCb(void *buf, wifi_promiscuous_pkt_type_t type);
@@ -354,6 +361,7 @@ private:
     AttackResultCb   _attackResultCb  = nullptr;
     ProbeRequestCb   _probeReqCb      = nullptr;
     DisruptCb        _disruptCb       = nullptr;
+    ClientFoundCb    _clientFoundCb   = nullptr;
 
     void _log(const char *fmt, ...);
 
@@ -416,7 +424,7 @@ private:
     void _sendCsaBurst();
     void _sendDeauthBurst(uint8_t count, const uint8_t *sta = nullptr);
     void _sendProbeRequest(const uint8_t *bssid);
-    void _recordClientForAp(const uint8_t *bssid, const uint8_t *sta);
+    void _recordClientForAp(const uint8_t *bssid, const uint8_t *sta, int8_t rssi = 0);
     void _markCapturedSsidGroup(const char *ssid, uint8_t ssid_len);
     void _markCaptured(const uint8_t *bssid);
 
