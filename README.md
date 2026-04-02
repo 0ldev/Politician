@@ -28,6 +28,7 @@ The library is built around a non-blocking state machine that manages channel ho
 | `Politician` | Main engine class managing the audit lifecycle |
 | `PoliticianFormat` | PCAPNG and Hashcat export utilities |
 | `PoliticianStorage` | Optional SD card logging and NVS persistence |
+| `PoliticianStress` | Decoupled DoS/disruption payload delivery (opt-in) |
 | `PoliticianTypes` | Core data structures and enumerations |
 
 ### Attack Modes
@@ -62,7 +63,7 @@ Or clone directly into your project's `lib/` directory:
 
 ```bash
 cd lib/
-git clone https://github.com/your-username/Politician.git
+git clone https://github.com/0ldev/Politician.git
 ```
 
 ### Arduino IDE
@@ -178,9 +179,17 @@ bool    hasTarget()   const;  // True if focused on a specific BSSID
 uint8_t getChannel()  const;  // Current radio channel
 int8_t  getLastRssi() const;  // RSSI of the last received frame
 Stats&  getStats();           // Reference to frame counters (captures, failures, etc.)
+Config& getConfig();          // Reference to the active config for runtime mutations
 void    resetStats();         // Zero all counters
 int     getApCount() const;   // Number of APs in the discovery cache
 bool    getAp(int idx, ApRecord &out) const; // Read AP from cache by index
+```
+
+#### Engine Control
+
+```cpp
+void setActive(bool active);  // Enable or disable frame processing without full teardown
+void setLogger(LogCb cb);     // Redirect internal log output to a custom callback
 ```
 
 #### Target & Channel Control
@@ -227,10 +236,11 @@ void setAttackMask(uint8_t mask);  // Configure active attack vectors (bitmask)
 #### Capture Type Constants
 
 ```cpp
-#define CAP_PMKID       0x01  // PMKID extracted via fake association
-#define CAP_EAPOL       0x02  // Full M1+M2 from passive capture
-#define CAP_EAPOL_CSA   0x03  // Full M1+M2 triggered by CSA/Deauth
-#define CAP_EAPOL_HALF  0x04  // M2-only (no anonce) — active attack pivot fired
+#define CAP_PMKID        0x01  // PMKID extracted via fake association
+#define CAP_EAPOL        0x02  // Full M1+M2 from passive capture
+#define CAP_EAPOL_CSA    0x03  // Full M1+M2 triggered by CSA/Deauth
+#define CAP_EAPOL_HALF   0x04  // M2-only (no anonce) — active attack pivot fired
+#define CAP_EAPOL_GROUP  0x05  // Non-pairwise EAPOL-Key (GTK rotation)
 ```
 
 #### Capture Filter Constants
@@ -250,7 +260,7 @@ void setAttackMask(uint8_t mask);  // Configure active attack vectors (bitmask)
 
 ```cpp
 struct HandshakeRecord {
-    uint8_t  type;           // CAP_PMKID / CAP_EAPOL / CAP_EAPOL_CSA / CAP_EAPOL_HALF
+    uint8_t  type;           // CAP_PMKID / CAP_EAPOL / CAP_EAPOL_CSA / CAP_EAPOL_HALF / CAP_EAPOL_GROUP
     uint8_t  channel;
     int8_t   rssi;
     uint8_t  bssid[6];
@@ -291,7 +301,8 @@ struct ApRecord {
     uint8_t ssid_len;
     uint8_t channel;
     int8_t  rssi;
-    uint8_t enc;       // 0=Open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
+    uint8_t enc;           // 0=Open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
+    bool    wps_enabled;   // WPS IE detected in beacon/probe-response
 };
 ```
 
@@ -327,6 +338,18 @@ size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max
 size_t writePcapngPacket(const uint8_t* payload, size_t len,
                          int8_t rssi, uint64_t ts_usec,
                          uint8_t* buffer, size_t max_len);
+```
+
+### Stress Utilities (Opt-in)
+
+Requires `#include <PoliticianStress.h>`. Not linked unless explicitly included.
+
+```cpp
+// Flood a WPA3 AP with SAE Commit frames to exhaust its anti-clogging token heap
+stress::saeCommitFlood(const uint8_t* bssid, uint32_t count = 1000);
+
+// Flood nearby APs with randomized Probe Requests to saturate association queues
+stress::probeRequestFlood(uint32_t count = 1000);
 ```
 
 ### Storage Utilities (Optional)
@@ -552,7 +575,7 @@ Then open `docs/html/index.html` in your browser.
 
 ## Hardware Requirements
 
-- **Platform**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3
+- **Platform**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3, ESP32-C6
 - **Framework**: Arduino or ESP-IDF
 - **Memory**: Minimum 4MB flash recommended
 - **Optional**: SD card module for persistent logging

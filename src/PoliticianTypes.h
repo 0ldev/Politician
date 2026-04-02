@@ -97,7 +97,8 @@ struct ApRecord {
     uint8_t  ssid_len;
     uint8_t  channel;
     int8_t   rssi;
-    uint8_t  enc;       // 0=open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
+    uint8_t  enc;           // 0=open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
+    bool     wps_enabled;   // WPS IE detected in beacon/probe-response
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────

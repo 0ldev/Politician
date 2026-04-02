@@ -368,6 +368,7 @@ private:
         bool     has_active_clients;
         bool     is_wpa3_only;          // True if PMF is required and no WPA2 AKM offered
         bool     is_hidden;             // True if SSID is blank
+        bool     wps_enabled;           // WPS IE detected
         uint8_t  known_stas[4][6];      // Up to 4 persistently tracked client MACs
         uint8_t  known_sta_count;
         uint8_t  beacon_count;          // Times this AP has been observed
@@ -377,7 +378,8 @@ private:
     int          _apCacheCount;
 
     void _cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
-                  uint8_t enc, uint8_t channel, int8_t rssi, bool is_wpa3_only = false);
+                  uint8_t enc, uint8_t channel, int8_t rssi,
+                  bool is_wpa3_only = false, bool wps = false);
     bool _lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len);
     bool _lookupEnc(const uint8_t *bssid, uint8_t &out_enc);
 
