@@ -311,6 +311,7 @@ struct ApRecord {
     bool    pmf_required;    // MFPR — AP mandates PMF (pure WPA3 / PMF-Required)
     uint8_t total_attempts;  // Failed attack attempts against this BSSID
     bool    captured;        // True if BSSID is on the captured or ignore list
+    bool    ft_capable;      // 802.11r FT AKM advertised (FT-PSK suite 4 or FT-EAP suite 3)
 };
 ```
 
@@ -543,6 +544,12 @@ engine.setAttackResultCallback([](const AttackResultRecord &res) {
         Serial.printf("[!] CSA/Deauth timed out: %s (%s)\n", res.ssid, bssid);
 });
 ```
+
+### 802.11r Fast Transition Detection
+
+The engine detects 802.11r Fast Transition AKMs (FT-PSK suite type 4, FT-EAP suite type 3) in beacon and probe-response RSN IEs. When detected, `ApRecord.ft_capable` is set to `true` and a log note is emitted during PMKID fishing.
+
+For FT Transition Mode APs (advertising both FT-PSK and regular WPA2-PSK), standard PMKID capture via the WPA2-PSK path works normally. For FT-only APs, the captured PMKID is FT-derived — save it as PCAPNG and use FT-aware offline tools (e.g. `hcxpcapngtool --enable_ft`) for cracking.
 
 ### Hidden Network Discovery
 

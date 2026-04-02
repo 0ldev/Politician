@@ -103,6 +103,7 @@ struct ApRecord {
     bool     pmf_required;     // MFPR bit set in RSN Capabilities (PMF mandatory)
     uint8_t  total_attempts;   // Number of failed attack attempts recorded
     bool     captured;         // True if BSSID is on the captured or ignore list
+    bool     ft_capable;       // 802.11r FT AKM advertised (FT-PSK or FT-EAP)
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────

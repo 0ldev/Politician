@@ -591,8 +591,10 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         if (ap.enc >= 3) _detectPmfFlags(ie, ie_len, pmf_capable, pmf_required);
         ap.pmf_capable  = pmf_capable;
         ap.pmf_required = pmf_required;
+        bool ft_capable = (ap.enc >= 3) && _detectFt(ie, ie_len);
+        ap.ft_capable   = ft_capable;
         _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch, rssi,
-                 is_wpa3_only, ap.wps_enabled, pmf_capable, pmf_required);
+                 is_wpa3_only, ap.wps_enabled, pmf_capable, pmf_required, ft_capable);
 
         // Fire apFoundCb only once min_beacon_count is satisfied
         if (_apFoundCb) {
@@ -1120,6 +1122,31 @@ bool Politician::_detectWpa3Only(const uint8_t *ie, uint16_t ie_len) {
     return false;
 }
 
+bool Politician::_detectFt(const uint8_t *ie, uint16_t ie_len) {
+    uint16_t pos = 0;
+    while (pos + 2 <= ie_len) {
+        uint8_t tag = ie[pos]; uint8_t len = ie[pos + 1];
+        if (pos + 2 + len > ie_len) break;
+        if (tag == 48 && len >= 10) { // RSN IE
+            uint16_t pw_count  = ie[pos + 8] | (ie[pos + 9] << 8);
+            uint16_t akm_off   = pos + 10 + (pw_count * 4);
+            if (akm_off + 2 <= pos + 2 + len) {
+                uint16_t akm_count = ie[akm_off] | (ie[akm_off + 1] << 8);
+                uint16_t list_off  = akm_off + 2;
+                for (uint16_t i = 0; i < akm_count; i++) {
+                    if (list_off + 4 > pos + 2 + len) break;
+                    // OUI 00:0F:AC, suite type 3 = FT-EAP, type 4 = FT-PSK
+                    if (ie[list_off] == 0x00 && ie[list_off+1] == 0x0F && ie[list_off+2] == 0xAC &&
+                        (ie[list_off+3] == 0x03 || ie[list_off+3] == 0x04)) return true;
+                    list_off += 4;
+                }
+            }
+        }
+        pos += 2 + len;
+    }
+    return false;
+}
+
 void Politician::_detectPmfFlags(const uint8_t *ie, uint16_t ie_len, bool &pmf_capable, bool &pmf_required) {
     pmf_capable = false; pmf_required = false;
     uint16_t pos = 0;
@@ -1178,7 +1205,8 @@ Politician::Session* Politician::_createSession(const uint8_t *bssid, const uint
 void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
                            uint8_t enc, uint8_t channel, int8_t rssi,
                            bool is_wpa3_only, bool wps,
-                           bool pmf_capable, bool pmf_required) {
+                           bool pmf_capable, bool pmf_required,
+                           bool ft_capable) {
     // enc_filter_mask: skip uncacheable encryption types (hidden APs bypass — SSID unknown yet)
     if (ssid_len > 0 && !(_cfg.enc_filter_mask & (1 << enc))) return;
 
@@ -1201,6 +1229,7 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
             _apCache[i].wps_enabled   = wps;
             _apCache[i].pmf_capable   = pmf_capable;
             _apCache[i].pmf_required  = pmf_required;
+            _apCache[i].ft_capable    = ft_capable;
             _apCache[i].last_seen_ms = now;
             if (ssid_len > 0) _apCache[i].is_hidden = false;
             if (_apCache[i].beacon_count < 0xFF) _apCache[i].beacon_count++;
@@ -1218,6 +1247,7 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
     _apCache[slot].wps_enabled   = wps;
     _apCache[slot].pmf_capable   = pmf_capable;
     _apCache[slot].pmf_required  = pmf_required;
+    _apCache[slot].ft_capable    = ft_capable;
     memcpy(_apCache[slot].bssid, bssid, 6); memcpy(_apCache[slot].ssid, ssid, ssid_len + 1);
     _apCache[slot].ssid_len = ssid_len; _apCache[slot].enc = enc; _apCache[slot].channel = channel;
     _apCache[slot].rssi = rssi; _apCache[slot].is_wpa3_only = is_wpa3_only;
@@ -1255,6 +1285,7 @@ bool Politician::getAp(int idx, ApRecord &out) const {
             out.pmf_required   = _apCache[i].pmf_required;
             out.total_attempts = _apCache[i].total_attempts;
             out.captured       = _isCaptured(_apCache[i].bssid);
+            out.ft_capable     = _apCache[i].ft_capable;
             return true;
         }
         found++;
@@ -1276,6 +1307,7 @@ bool Politician::getApByBssid(const uint8_t *bssid, ApRecord &out) const {
         out.pmf_required   = _apCache[i].pmf_required;
         out.total_attempts = _apCache[i].total_attempts;
         out.captured       = _isCaptured(_apCache[i].bssid);
+        out.ft_capable     = _apCache[i].ft_capable;
         return true;
     }
     return false;
@@ -1347,6 +1379,10 @@ void Politician::_randomizeMac() {
 
 void Politician::_startFishing(const uint8_t *bssid, const char *ssid, uint8_t ssid_len, uint8_t channel) {
     if (_fishState != FISH_IDLE) return;
+    for (int i = 0; i < MAX_AP_CACHE; i++) {
+        if (_apCache[i].active && memcmp(_apCache[i].bssid, bssid, 6) == 0 && _apCache[i].ft_capable)
+            _log("[Fish] Note: AP advertises FT AKM — PMKID may be FT-derived and require FT-aware cracking\n");
+    }
     _randomizeMac(); esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE); _channel = channel;
     wifi_config_t sta_cfg = {}; memcpy(sta_cfg.sta.ssid, ssid, ssid_len);
     memcpy(sta_cfg.sta.password, "WiFighter00", 11); sta_cfg.sta.bssid_set = true; memcpy(sta_cfg.sta.bssid, bssid, 6);
