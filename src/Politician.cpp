@@ -1118,7 +1118,8 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
         if (_apCache[i].active && memcmp(_apCache[i].bssid, bssid, 6) == 0) {
             memcpy(_apCache[i].ssid, ssid, ssid_len + 1); _apCache[i].ssid_len = ssid_len;
             _apCache[i].enc = enc; _apCache[i].channel = channel;
-            _apCache[i].rssi = rssi; _apCache[i].is_wpa3_only = is_wpa3_only;
+            _apCache[i].rssi = (int8_t)((_apCache[i].rssi * 4 + rssi) / 5);
+            _apCache[i].is_wpa3_only = is_wpa3_only;
             _apCache[i].last_seen_ms = now;
             if (ssid_len > 0) _apCache[i].is_hidden = false;
             if (_apCache[i].beacon_count < 0xFF) _apCache[i].beacon_count++;
