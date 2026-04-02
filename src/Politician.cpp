@@ -876,6 +876,12 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
         _recordClientForAp(bssid, sta);
 
         if (sess->has_m1) {
+            static const uint8_t zero_mic[16] = {};
+            if (memcmp(sess->mic, zero_mic, 16) == 0) {
+                _log("[EAPOL] M2 MIC is zero — discarding malformed frame\n");
+                sess->active = false;
+                return true;
+            }
             HandshakeRecord rec; memset(&rec, 0, sizeof(rec));
             rec.type = (_fishState == FISH_CSA_WAIT) ? CAP_EAPOL_CSA : CAP_EAPOL;
             rec.channel = sess->channel; rec.rssi = sess->rssi;
