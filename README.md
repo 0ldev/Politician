@@ -182,7 +182,8 @@ Stats&  getStats();           // Reference to frame counters (captures, failures
 Config& getConfig();          // Reference to the active config for runtime mutations
 void    resetStats();         // Zero all counters
 int     getApCount() const;   // Number of APs in the discovery cache
-bool    getAp(int idx, ApRecord &out) const; // Read AP from cache by index
+bool    getAp(int idx, ApRecord &out) const;                  // Read AP from cache by index
+bool    getApByBssid(const uint8_t* bssid, ApRecord &out) const; // Look up AP by BSSID
 ```
 
 #### Engine Control

@@ -1229,6 +1229,25 @@ bool Politician::getAp(int idx, ApRecord &out) const {
     return false;
 }
 
+bool Politician::getApByBssid(const uint8_t *bssid, ApRecord &out) const {
+    for (int i = 0; i < MAX_AP_CACHE; i++) {
+        if (!_apCache[i].active || memcmp(_apCache[i].bssid, bssid, 6) != 0) continue;
+        memcpy(out.bssid, _apCache[i].bssid, 6);
+        memcpy(out.ssid,  _apCache[i].ssid,  33);
+        out.ssid_len       = _apCache[i].ssid_len;
+        out.enc            = _apCache[i].enc;
+        out.channel        = _apCache[i].channel;
+        out.rssi           = _apCache[i].rssi;
+        out.wps_enabled    = _apCache[i].wps_enabled;
+        out.pmf_capable    = _apCache[i].pmf_capable;
+        out.pmf_required   = _apCache[i].pmf_required;
+        out.total_attempts = _apCache[i].total_attempts;
+        out.captured       = _isCaptured(_apCache[i].bssid);
+        return true;
+    }
+    return false;
+}
+
 bool Politician::_lookupEnc(const uint8_t *bssid, uint8_t &out_enc) {
     for (int i = 0; i < MAX_AP_CACHE; i++) {
         if (_apCache[i].active && memcmp(_apCache[i].bssid, bssid, 6) == 0) {

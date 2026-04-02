@@ -237,6 +237,14 @@ public:
      */
     bool            getAp(int idx, ApRecord &out) const;
 
+    /**
+     * @brief Looks up an AP in the discovery cache by BSSID.
+     * @param bssid 6-byte BSSID to search for.
+     * @param out Populated with the AP's details on success.
+     * @return True if found, false if the BSSID is not in cache.
+     */
+    bool            getApByBssid(const uint8_t *bssid, ApRecord &out) const;
+
     using EapolCb          = void (*)(const HandshakeRecord &rec);
     using ApFoundCb        = void (*)(const ApRecord &ap);
     using TargetFilterCb   = bool (*)(const ApRecord &ap);
