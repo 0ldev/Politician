@@ -554,7 +554,12 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         if (_filterCb && !_filterCb(ap)) return;
 
         bool is_wpa3_only = (ap.enc >= 3) && _detectWpa3Only(ie, ie_len);
-        _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch, rssi, is_wpa3_only, ap.wps_enabled);
+        bool pmf_capable = false, pmf_required = false;
+        if (ap.enc >= 3) _detectPmfFlags(ie, ie_len, pmf_capable, pmf_required);
+        ap.pmf_capable  = pmf_capable;
+        ap.pmf_required = pmf_required;
+        _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch, rssi,
+                 is_wpa3_only, ap.wps_enabled, pmf_capable, pmf_required);
 
         // Fire apFoundCb only once min_beacon_count is satisfied
         if (_apFoundCb) {
@@ -1082,6 +1087,29 @@ bool Politician::_detectWpa3Only(const uint8_t *ie, uint16_t ie_len) {
     return false;
 }
 
+void Politician::_detectPmfFlags(const uint8_t *ie, uint16_t ie_len, bool &pmf_capable, bool &pmf_required) {
+    pmf_capable = false; pmf_required = false;
+    uint16_t pos = 0;
+    while (pos + 2 <= ie_len) {
+        uint8_t tag = ie[pos]; uint8_t len = ie[pos + 1];
+        if (pos + 2 + len > ie_len) break;
+        if (tag == 48 && len >= 10) { // RSN IE
+            uint16_t pw_count  = ie[pos + 8] | (ie[pos + 9] << 8);
+            uint16_t akm_off   = pos + 10 + (pw_count * 4);
+            if (akm_off + 2 <= pos + 2 + len) {
+                uint16_t akm_count = ie[akm_off] | (ie[akm_off + 1] << 8);
+                uint16_t caps_off  = akm_off + 2 + akm_count * 4;
+                if (caps_off + 2 <= pos + 2 + len) {
+                    uint16_t caps = ie[caps_off] | (ie[caps_off + 1] << 8);
+                    pmf_capable  = (caps & 0x0080) != 0; // MFPC
+                    pmf_required = (caps & 0x0040) != 0; // MFPR
+                }
+            }
+        }
+        pos += 2 + len;
+    }
+}
+
 Politician::Session* Politician::_findSession(const uint8_t *bssid, const uint8_t *sta) {
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (_sessions[i].active && memcmp(_sessions[i].bssid, bssid, 6) == 0 && memcmp(_sessions[i].sta, sta, 6) == 0) return &_sessions[i];
@@ -1116,7 +1144,8 @@ Politician::Session* Politician::_createSession(const uint8_t *bssid, const uint
 
 void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
                            uint8_t enc, uint8_t channel, int8_t rssi,
-                           bool is_wpa3_only, bool wps) {
+                           bool is_wpa3_only, bool wps,
+                           bool pmf_capable, bool pmf_required) {
     // enc_filter_mask: skip uncacheable encryption types (hidden APs bypass — SSID unknown yet)
     if (ssid_len > 0 && !(_cfg.enc_filter_mask & (1 << enc))) return;
 
@@ -1135,8 +1164,10 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
             memcpy(_apCache[i].ssid, ssid, ssid_len + 1); _apCache[i].ssid_len = ssid_len;
             _apCache[i].enc = enc; _apCache[i].channel = channel;
             _apCache[i].rssi = (int8_t)((_apCache[i].rssi * 4 + rssi) / 5);
-            _apCache[i].is_wpa3_only = is_wpa3_only;
-            _apCache[i].wps_enabled  = wps;
+            _apCache[i].is_wpa3_only  = is_wpa3_only;
+            _apCache[i].wps_enabled   = wps;
+            _apCache[i].pmf_capable   = pmf_capable;
+            _apCache[i].pmf_required  = pmf_required;
             _apCache[i].last_seen_ms = now;
             if (ssid_len > 0) _apCache[i].is_hidden = false;
             if (_apCache[i].beacon_count < 0xFF) _apCache[i].beacon_count++;
@@ -1151,7 +1182,9 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
     _apCache[slot].beacon_count = 1;
     _apCache[slot].total_attempts = 0;
     _apCache[slot].is_hidden = (ssid_len == 0);
-    _apCache[slot].wps_enabled = wps;
+    _apCache[slot].wps_enabled   = wps;
+    _apCache[slot].pmf_capable   = pmf_capable;
+    _apCache[slot].pmf_required  = pmf_required;
     memcpy(_apCache[slot].bssid, bssid, 6); memcpy(_apCache[slot].ssid, ssid, ssid_len + 1);
     _apCache[slot].ssid_len = ssid_len; _apCache[slot].enc = enc; _apCache[slot].channel = channel;
     _apCache[slot].rssi = rssi; _apCache[slot].is_wpa3_only = is_wpa3_only;
@@ -1184,7 +1217,9 @@ bool Politician::getAp(int idx, ApRecord &out) const {
             out.enc         = _apCache[i].enc;
             out.channel     = _apCache[i].channel;
             out.rssi        = _apCache[i].rssi;
-            out.wps_enabled = _apCache[i].wps_enabled;
+            out.wps_enabled  = _apCache[i].wps_enabled;
+            out.pmf_capable  = _apCache[i].pmf_capable;
+            out.pmf_required = _apCache[i].pmf_required;
             return true;
         }
         found++;

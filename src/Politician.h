@@ -303,6 +303,7 @@ private:
     void _parseSsid(const uint8_t *ie, uint16_t ie_len, char *out, uint8_t &out_len);
     uint8_t _classifyEnc(const uint8_t *ie, uint16_t ie_len);
     bool _detectWpa3Only(const uint8_t *ie, uint16_t ie_len);
+    void _detectPmfFlags(const uint8_t *ie, uint16_t ie_len, bool &pmf_capable, bool &pmf_required);
 
     bool       _initialized = false;
     bool       _active;
@@ -369,6 +370,8 @@ private:
         bool     is_wpa3_only;          // True if PMF is required and no WPA2 AKM offered
         bool     is_hidden;             // True if SSID is blank
         bool     wps_enabled;           // WPS IE detected
+        bool     pmf_capable;           // MFPC bit in RSN Capabilities
+        bool     pmf_required;          // MFPR bit in RSN Capabilities
         uint8_t  known_stas[4][6];      // Up to 4 persistently tracked client MACs
         uint8_t  known_sta_count;
         uint8_t  beacon_count;          // Times this AP has been observed
@@ -379,7 +382,8 @@ private:
 
     void _cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
                   uint8_t enc, uint8_t channel, int8_t rssi,
-                  bool is_wpa3_only = false, bool wps = false);
+                  bool is_wpa3_only = false, bool wps = false,
+                  bool pmf_capable = false, bool pmf_required = false);
     bool _lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len);
     bool _lookupEnc(const uint8_t *bssid, uint8_t &out_enc);
 

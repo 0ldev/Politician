@@ -303,6 +303,8 @@ struct ApRecord {
     int8_t  rssi;
     uint8_t enc;           // 0=Open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
     bool    wps_enabled;   // WPS IE detected in beacon/probe-response
+    bool    pmf_capable;   // MFPC — AP supports Protected Management Frames
+    bool    pmf_required;  // MFPR — AP mandates PMF (pure WPA3 / PMF-Required)
 };
 ```
 
@@ -543,6 +545,8 @@ Probe Response frames triggered by deauth bursts automatically reveal hidden SSI
 ### PMF/WPA3 Detection
 
 RSNE (Robust Security Network Element) parsing automatically identifies networks with PMF Required. These are skipped to save time, but WPA3 Transition Mode networks (PMF Capable but not Required) are still targeted.
+
+`ApRecord` exposes `pmf_capable` and `pmf_required` so `setTargetFilter` callbacks can make finer-grained decisions than the binary `skip_immune_networks` config field — for example, to target only WPA3 Transition networks (PMF capable but not required).
 
 ## Examples
 

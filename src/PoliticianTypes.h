@@ -99,6 +99,8 @@ struct ApRecord {
     int8_t   rssi;
     uint8_t  enc;           // 0=open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
     bool     wps_enabled;   // WPS IE detected in beacon/probe-response
+    bool     pmf_capable;   // MFPC bit set in RSN Capabilities (PMF supported)
+    bool     pmf_required;  // MFPR bit set in RSN Capabilities (PMF mandatory)
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────
