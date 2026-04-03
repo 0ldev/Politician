@@ -596,7 +596,7 @@ Then open `docs/html/index.html` in your browser.
 
 ## Hardware Requirements
 
-- **Platform**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3, ESP32-C6
+- **Platform**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3 (ESP32-C6 pending Arduino framework support in PlatformIO)
 - **Framework**: Arduino or ESP-IDF
 - **Memory**: Minimum 4MB flash recommended
 - **Optional**: SD card module for persistent logging
