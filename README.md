@@ -187,6 +187,8 @@ void    resetStats();         // Zero all counters
 int     getApCount() const;   // Number of APs in the discovery cache
 bool    getAp(int idx, ApRecord &out) const;                  // Read AP from cache by index
 bool    getApByBssid(const uint8_t* bssid, ApRecord &out) const; // Look up AP by BSSID
+int     getClientCount(const uint8_t* bssid) const;           // Number of clients seen on AP (0-4)
+bool    getClient(const uint8_t* bssid, int idx, uint8_t out_sta[6]) const; // Read client MAC by index
 ```
 
 #### Engine Control

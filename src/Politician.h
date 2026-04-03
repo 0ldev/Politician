@@ -257,6 +257,22 @@ public:
      */
     bool            getApByBssid(const uint8_t *bssid, ApRecord &out) const;
 
+    /**
+     * @brief Returns the number of unique clients seen associated to a given AP.
+     * @param bssid 6-byte BSSID of the AP.
+     * @return Client count (0-4), or 0 if BSSID is not in cache.
+     */
+    int             getClientCount(const uint8_t *bssid) const;
+
+    /**
+     * @brief Reads a client MAC from the per-AP client table.
+     * @param bssid   6-byte BSSID of the AP.
+     * @param idx     Zero-based client index (0 to getClientCount()-1).
+     * @param out_sta Output buffer for the 6-byte client MAC.
+     * @return True if idx is valid, false otherwise.
+     */
+    bool            getClient(const uint8_t *bssid, int idx, uint8_t out_sta[6]) const;
+
     using EapolCb          = void (*)(const HandshakeRecord &rec);
     using ApFoundCb        = void (*)(const ApRecord &ap);
     using TargetFilterCb   = bool (*)(const ApRecord &ap);
