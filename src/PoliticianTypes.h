@@ -110,6 +110,7 @@ struct ApRecord {
     char     country[3];       // ISO 3166-1 alpha-2 country code from IE 7 (e.g. "US"), empty if absent
     uint16_t beacon_interval;  // Advertised beacon interval in TUs (1 TU = 1024 µs), 0 if unknown
     uint8_t  max_rate_mbps;    // Highest legacy data rate from Supported Rates IEs (Mbps), 0 if unknown
+    bool     is_hidden;        // True if AP broadcasts an empty SSID (hidden network)
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────

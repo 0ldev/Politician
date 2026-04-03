@@ -454,10 +454,10 @@ void Politician::_handleFrame(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuou
     if (_packetCb && _cfg.capture_filter != 0) {
         bool log_it = false;
         if (ftype == FC_TYPE_MGMT) {
-            if      (fsub == MGMT_SUB_BEACON   && (_cfg.capture_filter & LOG_FILTER_BEACONS))      log_it = true;
-            else if ((fsub == MGMT_SUB_PROBE_REQ || fsub == MGMT_SUB_PROBE_RESP) && (_cfg.capture_filter & LOG_FILTER_PROBES)) log_it = true;
-            else if (fsub == MGMT_SUB_PROBE_REQ && (_cfg.capture_filter & LOG_FILTER_PROBE_REQ))   log_it = true;
-            else if ((fsub == MGMT_SUB_DEAUTH || fsub == MGMT_SUB_DISASSOC) && (_cfg.capture_filter & LOG_FILTER_MGMT_DISRUPT)) log_it = true;
+            if (fsub == MGMT_SUB_BEACON && (_cfg.capture_filter & LOG_FILTER_BEACONS)) log_it = true;
+            if ((fsub == MGMT_SUB_PROBE_REQ || fsub == MGMT_SUB_PROBE_RESP) && (_cfg.capture_filter & LOG_FILTER_PROBES)) log_it = true;
+            if (fsub == MGMT_SUB_PROBE_REQ && (_cfg.capture_filter & LOG_FILTER_PROBE_REQ)) log_it = true;
+            if ((fsub == MGMT_SUB_DEAUTH || fsub == MGMT_SUB_DISASSOC) && (_cfg.capture_filter & LOG_FILTER_MGMT_DISRUPT)) log_it = true;
         } else if (ftype == FC_TYPE_DATA && (_cfg.capture_filter & LOG_FILTER_HANDSHAKES)) {
             uint16_t hdr_len = sizeof(ieee80211_hdr_t);
             uint8_t subtype = fsub >> 4;
@@ -1078,7 +1078,7 @@ void Politician::_parseEapIdentity(const uint8_t *bssid, const uint8_t *sta,
     _log("[Enterprise] Harvested Identity '%s' from %02X:%02X:%02X:%02X:%02X:%02X\n",
          rec.identity, sta[0], sta[1], sta[2], sta[3], sta[4], sta[5]);
          
-    _identityCb(rec);
+    if (_identityCb) _identityCb(rec);
 }
 
 void Politician::_parseSsid(const uint8_t *ie, uint16_t ie_len, char *out, uint8_t &out_len) {
@@ -1236,19 +1236,25 @@ Politician::Session* Politician::_createSession(const uint8_t *bssid, const uint
             return &_sessions[i];
         }
     }
-    uint32_t oldest_ms = UINT32_MAX; int oldest_idx = 0;
+    // Prefer evicting incomplete sessions (no M1 or M2) to avoid discarding crackable handshakes
+    int oldest_idx = 0; uint32_t oldest_ms = UINT32_MAX;
+    int incomplete_idx = -1; uint32_t incomplete_oldest = UINT32_MAX;
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (_sessions[i].created_ms < oldest_ms) { oldest_ms = _sessions[i].created_ms; oldest_idx = i; }
+        if (!(_sessions[i].has_m1 && _sessions[i].has_m2) && _sessions[i].created_ms < incomplete_oldest) {
+            incomplete_oldest = _sessions[i].created_ms; incomplete_idx = i;
+        }
     }
-    _log("[Session] Evicting oldest session for %02X:%02X:%02X:%02X:%02X:%02X (has_m1=%d has_m2=%d) — session table full\n",
-        _sessions[oldest_idx].bssid[0], _sessions[oldest_idx].bssid[1], _sessions[oldest_idx].bssid[2],
-        _sessions[oldest_idx].bssid[3], _sessions[oldest_idx].bssid[4], _sessions[oldest_idx].bssid[5],
-        _sessions[oldest_idx].has_m1, _sessions[oldest_idx].has_m2);
-    memset(&_sessions[oldest_idx], 0, sizeof(Session));
-    memcpy(_sessions[oldest_idx].bssid, bssid, 6); memcpy(_sessions[oldest_idx].sta, sta, 6);
-    _sessions[oldest_idx].active = true; _sessions[oldest_idx].created_ms = millis();
-    _lookupSsid(bssid, _sessions[oldest_idx].ssid, _sessions[oldest_idx].ssid_len);
-    return &_sessions[oldest_idx];
+    int evict = (incomplete_idx >= 0) ? incomplete_idx : oldest_idx;
+    _log("[Session] Evicting session for %02X:%02X:%02X:%02X:%02X:%02X (has_m1=%d has_m2=%d) — session table full\n",
+        _sessions[evict].bssid[0], _sessions[evict].bssid[1], _sessions[evict].bssid[2],
+        _sessions[evict].bssid[3], _sessions[evict].bssid[4], _sessions[evict].bssid[5],
+        _sessions[evict].has_m1, _sessions[evict].has_m2);
+    memset(&_sessions[evict], 0, sizeof(Session));
+    memcpy(_sessions[evict].bssid, bssid, 6); memcpy(_sessions[evict].sta, sta, 6);
+    _sessions[evict].active = true; _sessions[evict].created_ms = millis();
+    _lookupSsid(bssid, _sessions[evict].ssid, _sessions[evict].ssid_len);
+    return &_sessions[evict];
 }
 
 void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
@@ -1256,6 +1262,7 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
                            bool is_wpa3_only, bool wps,
                            bool pmf_capable, bool pmf_required,
                            bool ft_capable) {
+    if (ssid_len > 32) ssid_len = 32; // defensive clamp — _parseSsid already enforces this
     // enc_filter_mask: skip uncacheable encryption types (hidden APs bypass — SSID unknown yet)
     if (ssid_len > 0 && !(_cfg.enc_filter_mask & (1 << enc))) return;
 
@@ -1281,7 +1288,7 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
             _apCache[i].ft_capable    = ft_capable;
             _apCache[i].last_seen_ms = now;
             if (ssid_len > 0) _apCache[i].is_hidden = false;
-            if (_apCache[i].beacon_count < 0xFF) _apCache[i].beacon_count++;
+            if (_apCache[i].beacon_count < 0xFFFF) _apCache[i].beacon_count++;
             return;
         }
     }
@@ -1360,6 +1367,7 @@ bool Politician::getAp(int idx, ApRecord &out) const {
             memcpy(out.country, _apCache[i].country, 3);
             out.beacon_interval = _apCache[i].beacon_interval;
             out.max_rate_mbps   = _apCache[i].max_rate_mbps;
+            out.is_hidden       = _apCache[i].is_hidden;
             return true;
         }
         found++;
@@ -1387,6 +1395,7 @@ bool Politician::getApByBssid(const uint8_t *bssid, ApRecord &out) const {
         memcpy(out.country, _apCache[i].country, 3);
         out.beacon_interval = _apCache[i].beacon_interval;
         out.max_rate_mbps   = _apCache[i].max_rate_mbps;
+        out.is_hidden       = _apCache[i].is_hidden;
         return true;
     }
     return false;

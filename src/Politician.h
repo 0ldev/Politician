@@ -433,7 +433,7 @@ private:
         bool     ft_capable;            // 802.11r FT AKM present (FT-PSK=4 or FT-EAP=3)
         uint8_t  known_stas[4][6];      // Up to 4 persistently tracked client MACs
         uint8_t  known_sta_count;
-        uint8_t  beacon_count;          // Times this AP has been observed
+        uint16_t beacon_count;          // Times this AP has been observed
         uint8_t  total_attempts;        // Total failed attack attempts against this AP
         char     country[3];            // IE 7 country code (e.g. "US"), empty if absent
         uint16_t beacon_interval;       // Beacon interval in TUs from fixed fields
