@@ -332,6 +332,12 @@ public:
      */
     void setClientFoundCallback(ClientFoundCb cb)   { _clientFoundCb = cb; }
 
+    /**
+     * @brief Sets the callback fired when a potential evil twin or rogue AP is detected.
+     * Triggered when a newly observed BSSID advertises the same SSID as an already-cached AP on the same channel.
+     */
+    void setRogueApCallback(RogueApCb cb)           { _rogueApCb = cb; }
+
 private:
     static void IRAM_ATTR _promiscuousCb(void *buf, wifi_promiscuous_pkt_type_t type);
     static Politician *_instance;
@@ -396,6 +402,7 @@ private:
     ProbeRequestCb   _probeReqCb      = nullptr;
     DisruptCb        _disruptCb       = nullptr;
     ClientFoundCb    _clientFoundCb   = nullptr;
+    RogueApCb        _rogueApCb       = nullptr;
 
     void _log(const char *fmt, ...);
 

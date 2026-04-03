@@ -1301,6 +1301,26 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
     _apCache[slot].ssid_len = ssid_len; _apCache[slot].enc = enc; _apCache[slot].channel = channel;
     _apCache[slot].rssi = rssi; _apCache[slot].is_wpa3_only = is_wpa3_only;
     _apCacheCount++;
+
+    // Rogue AP detection: fire callback if another active AP shares the same SSID on the same channel
+    if (_rogueApCb && ssid_len > 0) {
+        for (int i = 0; i < MAX_AP_CACHE; i++) {
+            if (i == slot || !_apCache[i].active) continue;
+            if (_apCache[i].channel != channel) continue;
+            if (_apCache[i].ssid_len != ssid_len || memcmp(_apCache[i].ssid, ssid, ssid_len) != 0) continue;
+            if (memcmp(_apCache[i].bssid, bssid, 6) == 0) continue;
+            RogueApRecord rec;
+            memset(&rec, 0, sizeof(rec));
+            memcpy(rec.known_bssid, _apCache[i].bssid, 6);
+            memcpy(rec.rogue_bssid, bssid, 6);
+            memcpy(rec.ssid, ssid, ssid_len + 1);
+            rec.ssid_len = ssid_len;
+            rec.channel  = channel;
+            rec.rssi     = rssi;
+            _rogueApCb(rec);
+            break;
+        }
+    }
 }
 
 bool Politician::_lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len) {

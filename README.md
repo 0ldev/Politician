@@ -171,6 +171,7 @@ void setPacketLogger(PacketCb cb);              // Raw promiscuous-mode frames
 void setProbeRequestCallback(ProbeRequestCb cb);// Probe request received (client device history)
 void setDisruptCallback(DisruptCb cb);          // Deauth/Disassoc frame received
 void setClientFoundCallback(ClientFoundCb cb);  // New client STA seen associated to an AP
+void setRogueApCallback(RogueApCb cb);          // Second BSSID with same SSID on same channel (evil twin)
 ```
 
 #### State & Stats
@@ -355,6 +356,19 @@ struct AttackResultRecord {
     char         ssid[33];
     uint8_t      ssid_len;
     AttackResult result;
+};
+```
+
+#### RogueApRecord
+
+```cpp
+struct RogueApRecord {
+    uint8_t known_bssid[6]; // BSSID of the first AP already cached with this SSID
+    uint8_t rogue_bssid[6]; // BSSID of the newly observed AP sharing the same SSID
+    char    ssid[33];       // The shared SSID
+    uint8_t ssid_len;
+    uint8_t channel;        // Channel on which the conflict was detected
+    int8_t  rssi;           // Signal strength of the rogue AP (dBm)
 };
 ```
 

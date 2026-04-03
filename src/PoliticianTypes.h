@@ -167,6 +167,21 @@ struct AttackResultRecord {
 typedef void (*AttackResultCb)(const AttackResultRecord &rec);
 typedef void (*ClientFoundCb)(const uint8_t *bssid, const uint8_t *sta, int8_t rssi);
 
+/**
+ * @brief Fired when a second BSSID advertising the same SSID is observed on the same channel.
+ * This indicates a potential evil twin or rogue AP. Both the known AP and the newcomer are included.
+ */
+struct RogueApRecord {
+    uint8_t known_bssid[6]; // BSSID of the first AP already cached with this SSID
+    uint8_t rogue_bssid[6]; // BSSID of the newly observed AP sharing the same SSID
+    char    ssid[33];       // The shared SSID
+    uint8_t ssid_len;
+    uint8_t channel;        // Channel on which the conflict was detected
+    int8_t  rssi;           // Signal strength of the rogue AP (dBm)
+};
+
+typedef void (*RogueApCb)(const RogueApRecord &rec); // Fired when an evil twin / rogue AP is detected
+
 // ─── 802.1X Enterprise Identity Record ─────────────────────────────────────────
 /** @brief A harvested 802.1X Enterprise plaintext identity, delivered to the IdentityCb callback. */
 struct EapIdentityRecord {
