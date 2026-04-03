@@ -160,9 +160,13 @@ void Politician::clearCapturedList() {
 
 void Politician::markCaptured(const uint8_t *bssid) {
     if (_isCaptured(bssid)) return;
-    int slot = _capturedCount % MAX_CAPTURED;
-    _captured[slot].active = true;
-    memcpy(_captured[slot].bssid, bssid, 6);
+    if (_capturedCount >= MAX_CAPTURED) {
+        _log("[Cap] List full — %02X:%02X:%02X:%02X:%02X:%02X not marked\n",
+            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+        return;
+    }
+    _captured[_capturedCount].active = true;
+    memcpy(_captured[_capturedCount].bssid, bssid, 6);
     _capturedCount++;
     _log("[Cap] Marked %02X:%02X:%02X:%02X:%02X:%02X — won't re-capture\n",
         bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
@@ -391,6 +395,8 @@ void Politician::tick() {
             if (!_apCache[i].active || _isCaptured(_apCache[i].bssid)) continue;
             if (_cfg.skip_immune_networks && _apCache[i].is_wpa3_only) continue;
             if (_apCache[i].enc < 2) continue; // Skip open/WEP
+            if (_cfg.min_beacon_count > 0 && _apCache[i].beacon_count < _cfg.min_beacon_count) continue;
+            if (_cfg.require_active_clients && !_apCache[i].has_active_clients) continue;
             if (_apCache[i].rssi > best_rssi) { best_rssi = _apCache[i].rssi; best = i; }
         }
         if (best >= 0) {
@@ -1465,8 +1471,8 @@ void Politician::_markCapturedSsidGroup(const char *ssid, uint8_t ssid_len) {
 
 void Politician::_markCaptured(const uint8_t *bssid) {
     if (_isCaptured(bssid)) return;
-    int slot = _capturedCount % MAX_CAPTURED;
-    _captured[slot].active = true; memcpy(_captured[slot].bssid, bssid, 6); _capturedCount++;
+    if (_capturedCount >= MAX_CAPTURED) return; // list full — never overwrite existing entries
+    _captured[_capturedCount].active = true; memcpy(_captured[_capturedCount].bssid, bssid, 6); _capturedCount++;
     _log("[Cap] Marked %02X:%02X:%02X:%02X:%02X:%02X\n", bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
 }
 
