@@ -599,6 +599,31 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch, rssi,
                  is_wpa3_only, ap.wps_enabled, pmf_capable, pmf_required, ft_capable);
 
+        // Parse beacon interval (fixed field bytes 8-9) and max legacy data rate
+        {
+            uint16_t bint = (len >= 10) ? (((uint16_t)payload[8]) | ((uint16_t)payload[9] << 8)) : 0;
+            uint8_t  maxr = 0;
+            uint16_t pos  = 0;
+            while (pos + 2 <= ie_len) {
+                uint8_t tag = ie[pos], tlen = ie[pos + 1];
+                if (pos + 2 + tlen > ie_len) break;
+                if (tag == 1 || tag == 50) { // Supported Rates / Extended Supported Rates
+                    for (uint8_t ri = 0; ri < tlen; ri++) {
+                        uint8_t r = (ie[pos + 2 + ri] & 0x7F); // 500 kbps units
+                        if (r > maxr) maxr = r;
+                    }
+                }
+                pos += 2 + tlen;
+            }
+            for (int ci = 0; ci < MAX_AP_CACHE; ci++) {
+                if (_apCache[ci].active && memcmp(_apCache[ci].bssid, ap.bssid, 6) == 0) {
+                    if (bint > 0) _apCache[ci].beacon_interval = bint;
+                    if (maxr > 0) _apCache[ci].max_rate_mbps   = maxr / 2; // convert to Mbps
+                    break;
+                }
+            }
+        }
+
         // Parse IE 7 (Country) and store in cache
         {
             uint16_t pos = 0;
@@ -1313,6 +1338,8 @@ bool Politician::getAp(int idx, ApRecord &out) const {
             out.first_seen_ms  = _apCache[i].first_seen_ms;
             out.last_seen_ms   = _apCache[i].last_seen_ms;
             memcpy(out.country, _apCache[i].country, 3);
+            out.beacon_interval = _apCache[i].beacon_interval;
+            out.max_rate_mbps   = _apCache[i].max_rate_mbps;
             return true;
         }
         found++;
@@ -1334,10 +1361,12 @@ bool Politician::getApByBssid(const uint8_t *bssid, ApRecord &out) const {
         out.pmf_required   = _apCache[i].pmf_required;
         out.total_attempts = _apCache[i].total_attempts;
         out.captured       = _isCaptured(_apCache[i].bssid);
-        out.ft_capable     = _apCache[i].ft_capable;
-        out.first_seen_ms  = _apCache[i].first_seen_ms;
-        out.last_seen_ms   = _apCache[i].last_seen_ms;
+        out.ft_capable      = _apCache[i].ft_capable;
+        out.first_seen_ms   = _apCache[i].first_seen_ms;
+        out.last_seen_ms    = _apCache[i].last_seen_ms;
         memcpy(out.country, _apCache[i].country, 3);
+        out.beacon_interval = _apCache[i].beacon_interval;
+        out.max_rate_mbps   = _apCache[i].max_rate_mbps;
         return true;
     }
     return false;

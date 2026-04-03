@@ -337,6 +337,8 @@ struct ApRecord {
     uint32_t first_seen_ms;   // millis() timestamp when this AP was first observed
     uint32_t last_seen_ms;    // millis() timestamp of the most recent beacon or probe response
     char     country[3];      // ISO 3166-1 alpha-2 country code from IE 7 (e.g. "US"), empty if absent
+    uint16_t beacon_interval; // Advertised beacon interval in TUs (1 TU = 1024 µs), 0 if unknown
+    uint8_t  max_rate_mbps;   // Highest legacy data rate from Supported Rates IE (Mbps), 0 if unknown
 };
 ```
 

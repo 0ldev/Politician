@@ -429,6 +429,8 @@ private:
         uint8_t  beacon_count;          // Times this AP has been observed
         uint8_t  total_attempts;        // Total failed attack attempts against this AP
         char     country[3];            // IE 7 country code (e.g. "US"), empty if absent
+        uint16_t beacon_interval;       // Beacon interval in TUs from fixed fields
+        uint8_t  max_rate_mbps;         // Highest rate from Supported Rates IE (Mbps)
     };
     ApCacheEntry _apCache[MAX_AP_CACHE];
     int          _apCacheCount;
