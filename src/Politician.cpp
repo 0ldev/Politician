@@ -1238,7 +1238,7 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
     }
     int slot = _apCacheCount % MAX_AP_CACHE;
     _apCache[slot].active = true; _apCache[slot].last_probe_ms = 0;
-    _apCache[slot].last_stimulate_ms = 0; _apCache[slot].last_seen_ms = now;
+    _apCache[slot].last_stimulate_ms = 0; _apCache[slot].first_seen_ms = now; _apCache[slot].last_seen_ms = now;
     _apCache[slot].last_hidden_probe_ms = 0;
     _apCache[slot].known_sta_count = 0;
     _apCache[slot].beacon_count = 1;
@@ -1286,6 +1286,8 @@ bool Politician::getAp(int idx, ApRecord &out) const {
             out.total_attempts = _apCache[i].total_attempts;
             out.captured       = _isCaptured(_apCache[i].bssid);
             out.ft_capable     = _apCache[i].ft_capable;
+            out.first_seen_ms  = _apCache[i].first_seen_ms;
+            out.last_seen_ms   = _apCache[i].last_seen_ms;
             return true;
         }
         found++;
@@ -1308,6 +1310,8 @@ bool Politician::getApByBssid(const uint8_t *bssid, ApRecord &out) const {
         out.total_attempts = _apCache[i].total_attempts;
         out.captured       = _isCaptured(_apCache[i].bssid);
         out.ft_capable     = _apCache[i].ft_capable;
+        out.first_seen_ms  = _apCache[i].first_seen_ms;
+        out.last_seen_ms   = _apCache[i].last_seen_ms;
         return true;
     }
     return false;

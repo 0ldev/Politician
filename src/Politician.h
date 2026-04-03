@@ -396,6 +396,7 @@ private:
         uint8_t  enc;
         uint8_t  channel;
         int8_t   rssi;
+        uint32_t first_seen_ms;
         uint32_t last_seen_ms;
         uint32_t last_probe_ms;
         uint32_t last_stimulate_ms;

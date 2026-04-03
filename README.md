@@ -313,7 +313,9 @@ struct ApRecord {
     bool    pmf_required;    // MFPR — AP mandates PMF (pure WPA3 / PMF-Required)
     uint8_t total_attempts;  // Failed attack attempts against this BSSID
     bool    captured;        // True if BSSID is on the captured or ignore list
-    bool    ft_capable;      // 802.11r FT AKM advertised (FT-PSK suite 4 or FT-EAP suite 3)
+    bool     ft_capable;      // 802.11r FT AKM advertised (FT-PSK suite 4 or FT-EAP suite 3)
+    uint32_t first_seen_ms;   // millis() timestamp when this AP was first observed
+    uint32_t last_seen_ms;    // millis() timestamp of the most recent beacon or probe response
 };
 ```
 
