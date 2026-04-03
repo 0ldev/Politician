@@ -13,7 +13,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        board: [esp32dev, esp32-s2-saola-1, esp32-s3-devkitc-1, esp32-c3-devkitm-1]
+        example:
+          - AutoEnterpriseHunter
+          - DynamicControl
+          - EnterpriseAuditing
+          - ExportFormats
+          - SerialStreaming
+          - StorageAndNVS
+          - StressTest
+          - TargetedAuditing
+          - WigleIntegration
 
     steps:
       - name: Checkout repository
@@ -25,15 +34,8 @@ jobs:
           python-version: '3.x'
 
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install platformio intelhex
 
-      - name: Compile all examples
-        run: |
-          for ino in examples/*/*.ino; do
-            echo "Building: $ino (board: ${{ matrix.board }})"
-            pio ci "$ino" \
-              --lib=src \
-              --board=${{ matrix.board }} \
-              --project-option="platform=espressif32@~6.4.0" \
-              --project-option="framework=arduino"
-          done
+      - name: Build ${{ matrix.example }}
+        working-directory: examples/${{ matrix.example }}
+        run: pio run
