@@ -443,6 +443,7 @@ void Politician::_handleFrame(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuou
     _stats.total++;
     _lastRssi  = (int8_t)pkt->rx_ctrl.rssi;
     _rxChannel = pkt->rx_ctrl.channel;
+    if (_rxChannel >= 1 && _rxChannel <= 14) _stats.channel_frames[_rxChannel - 1]++;
 
     const ieee80211_hdr_t *hdr = (const ieee80211_hdr_t *)pkt->payload;
     uint16_t fc    = hdr->frame_ctrl;

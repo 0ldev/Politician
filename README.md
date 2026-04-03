@@ -264,6 +264,24 @@ void clearAttackMaskOverrides();                                  // Remove all 
 
 ### Data Structures
 
+#### Stats
+
+```cpp
+struct Stats {
+    uint32_t total;              // Total frames received
+    uint32_t mgmt;               // Management frames
+    uint32_t ctrl;               // Control frames
+    uint32_t data;               // Data frames
+    uint32_t eapol;              // EAPOL frames detected
+    uint32_t pmkid_found;        // PMKIDs captured
+    uint32_t beacons;            // Beacon and probe-response frames
+    uint32_t captures;           // Total successful captures
+    uint32_t failed_pmkid;       // PMKID attempts exhausted without capture
+    uint32_t failed_csa;         // CSA/Deauth windows expired without EAPOL
+    uint16_t channel_frames[14]; // Frames per 2.4GHz channel (index 0 = ch1 … index 13 = ch14)
+};
+```
+
 #### HandshakeRecord
 
 ```cpp

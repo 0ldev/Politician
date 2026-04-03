@@ -120,8 +120,9 @@ struct Stats {
     uint32_t pmkid_found;
     uint32_t beacons;
     uint32_t captures;
-    uint32_t failed_pmkid; // PMKID retries exhausted without capture
-    uint32_t failed_csa;   // CSA/Deauth wait expired without EAPOL
+    uint32_t failed_pmkid;      // PMKID retries exhausted without capture
+    uint32_t failed_csa;        // CSA/Deauth wait expired without EAPOL
+    uint16_t channel_frames[14]; // Frames received per 2.4GHz channel (index 0 = ch1, index 13 = ch14)
 };
 
 // ─── Handshake Record ─────────────────────────────────────────────────────────
