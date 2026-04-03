@@ -91,6 +91,7 @@ struct Config {
 };
 
 // ─── AP Record ────────────────────────────────────────────────────────────────
+/** @brief Snapshot of a discovered Access Point from the internal cache. Populated by getAp(), getApByBssid(), and the ApFoundCb callback. */
 struct ApRecord {
     uint8_t  bssid[6];
     char     ssid[33];
@@ -107,6 +108,7 @@ struct ApRecord {
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────
+/** @brief Cumulative frame and capture counters for the engine session. Accessible via getStats(), reset with resetStats(). */
 struct Stats {
     uint32_t total;
     uint32_t mgmt;
@@ -121,6 +123,7 @@ struct Stats {
 };
 
 // ─── Handshake Record ─────────────────────────────────────────────────────────
+/** @brief A captured handshake or PMKID record delivered to the EapolCb callback. The @p type field identifies the capture path; fields not relevant to that path are zeroed. */
 struct HandshakeRecord {
     uint8_t  type;          // CAP_PMKID / CAP_EAPOL / ...
     uint8_t  channel;
@@ -147,6 +150,7 @@ enum AttackResult : uint8_t {
     RESULT_CSA_EXPIRED     = 2, // CSA/Deauth wait window closed, no EAPOL captured
 };
 
+/** @brief Identifies the AP and failure reason for a failed attack, delivered to the AttackResultCb callback. */
 struct AttackResultRecord {
     uint8_t      bssid[6];
     char         ssid[33];
@@ -158,6 +162,7 @@ typedef void (*AttackResultCb)(const AttackResultRecord &rec);
 typedef void (*ClientFoundCb)(const uint8_t *bssid, const uint8_t *sta, int8_t rssi);
 
 // ─── 802.1X Enterprise Identity Record ─────────────────────────────────────────
+/** @brief A harvested 802.1X Enterprise plaintext identity, delivered to the IdentityCb callback. */
 struct EapIdentityRecord {
     uint8_t  bssid[6];      // Access Point MAC
     uint8_t  client[6];     // Enterprise Client MAC
@@ -167,6 +172,7 @@ struct EapIdentityRecord {
 };
 
 // ─── Probe Request Record ─────────────────────────────────────────────────────
+/** @brief A probe request frame observed on the air, delivered to the ProbeRequestCb callback. */
 struct ProbeRequestRecord {
     uint8_t  client[6];     // Probing device MAC
     uint8_t  channel;
@@ -176,6 +182,7 @@ struct ProbeRequestRecord {
 };
 
 // ─── Disruption Record ────────────────────────────────────────────────────────
+/** @brief A deauthentication or disassociation frame observed on the air, delivered to the DisruptCb callback. */
 struct DisruptRecord {
     uint8_t  src[6];        // Frame source MAC
     uint8_t  dst[6];        // Frame destination MAC
