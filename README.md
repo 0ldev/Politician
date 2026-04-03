@@ -337,6 +337,34 @@ struct AttackResultRecord {
 };
 ```
 
+#### ProbeRequestRecord
+
+```cpp
+struct ProbeRequestRecord {
+    uint8_t client[6];   // Probing device MAC
+    uint8_t channel;
+    int8_t  rssi;
+    char    ssid[33];    // Requested SSID (empty = wildcard probe)
+    uint8_t ssid_len;
+    bool    rand_mac;    // True if locally administered bit set (iOS/Android MAC randomization)
+};
+```
+
+#### DisruptRecord
+
+```cpp
+struct DisruptRecord {
+    uint8_t  src[6];     // Frame source MAC
+    uint8_t  dst[6];     // Frame destination MAC
+    uint8_t  bssid[6];   // BSSID (addr3)
+    uint16_t reason;     // 802.11 reason code
+    uint8_t  subtype;    // MGMT_SUB_DEAUTH (0xC0) or MGMT_SUB_DISASSOC (0xA0)
+    uint8_t  channel;
+    int8_t   rssi;
+    bool     rand_mac;   // True if source MAC has locally administered bit set (randomized)
+};
+```
+
 ### Format Utilities
 
 PCAPNG is the primary capture format — it is tool-agnostic, preserves full frame context, and can be opened in Wireshark or piped through `hcxpcapngtool`. HC22000 is an auxiliary text export for users who want to feed captures directly into `hashcat` without an intermediate conversion step.

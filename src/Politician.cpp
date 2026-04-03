@@ -509,8 +509,9 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             ProbeRequestRecord rec;
             memset(&rec, 0, sizeof(rec));
             memcpy(rec.client, hdr->addr2, 6);
-            rec.channel = _rxChannel;
-            rec.rssi    = rssi;
+            rec.channel  = _rxChannel;
+            rec.rssi     = rssi;
+            rec.rand_mac = (rec.client[0] & 0x02) != 0;
             // Probe request body starts directly with IEs (no fixed fields)
             _parseSsid(payload, len, rec.ssid, rec.ssid_len);
             _probeReqCb(rec);
@@ -525,10 +526,11 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             memcpy(rec.src,   hdr->addr2, 6);
             memcpy(rec.dst,   hdr->addr1, 6);
             memcpy(rec.bssid, hdr->addr3, 6);
-            rec.reason  = (len >= 2) ? (((uint16_t)payload[0]) | ((uint16_t)payload[1] << 8)) : 0;
-            rec.subtype = subtype;
-            rec.channel = _rxChannel;
-            rec.rssi    = rssi;
+            rec.reason   = (len >= 2) ? (((uint16_t)payload[0]) | ((uint16_t)payload[1] << 8)) : 0;
+            rec.subtype  = subtype;
+            rec.channel  = _rxChannel;
+            rec.rssi     = rssi;
+            rec.rand_mac = (rec.src[0] & 0x02) != 0;
             _disruptCb(rec);
         }
         return;

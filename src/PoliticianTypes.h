@@ -181,6 +181,7 @@ struct ProbeRequestRecord {
     int8_t   rssi;
     char     ssid[33];      // Requested SSID (empty = wildcard probe)
     uint8_t  ssid_len;
+    bool     rand_mac;      // True if locally administered bit is set (iOS/Android MAC randomization)
 };
 
 // ─── Disruption Record ────────────────────────────────────────────────────────
@@ -193,6 +194,7 @@ struct DisruptRecord {
     uint8_t  subtype;       // MGMT_SUB_DEAUTH (0xC0) or MGMT_SUB_DISASSOC (0xA0)
     uint8_t  channel;
     int8_t   rssi;
+    bool     rand_mac;      // True if source MAC has locally administered bit set (randomized)
 };
 
 } // namespace politician
