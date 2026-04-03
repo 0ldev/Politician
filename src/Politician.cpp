@@ -599,6 +599,27 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch, rssi,
                  is_wpa3_only, ap.wps_enabled, pmf_capable, pmf_required, ft_capable);
 
+        // Parse IE 7 (Country) and store in cache
+        {
+            uint16_t pos = 0;
+            while (pos + 2 <= ie_len) {
+                uint8_t tag = ie[pos], tlen = ie[pos + 1];
+                if (pos + 2 + tlen > ie_len) break;
+                if (tag == 7 && tlen >= 2) {
+                    for (int ci = 0; ci < MAX_AP_CACHE; ci++) {
+                        if (_apCache[ci].active && memcmp(_apCache[ci].bssid, ap.bssid, 6) == 0) {
+                            _apCache[ci].country[0] = ie[pos + 2];
+                            _apCache[ci].country[1] = ie[pos + 3];
+                            _apCache[ci].country[2] = '\0';
+                            break;
+                        }
+                    }
+                    break;
+                }
+                pos += 2 + tlen;
+            }
+        }
+
         // Fire apFoundCb only once min_beacon_count is satisfied
         if (_apFoundCb) {
             bool threshold_ok = true;
@@ -1291,6 +1312,7 @@ bool Politician::getAp(int idx, ApRecord &out) const {
             out.ft_capable     = _apCache[i].ft_capable;
             out.first_seen_ms  = _apCache[i].first_seen_ms;
             out.last_seen_ms   = _apCache[i].last_seen_ms;
+            memcpy(out.country, _apCache[i].country, 3);
             return true;
         }
         found++;
@@ -1315,6 +1337,7 @@ bool Politician::getApByBssid(const uint8_t *bssid, ApRecord &out) const {
         out.ft_capable     = _apCache[i].ft_capable;
         out.first_seen_ms  = _apCache[i].first_seen_ms;
         out.last_seen_ms   = _apCache[i].last_seen_ms;
+        memcpy(out.country, _apCache[i].country, 3);
         return true;
     }
     return false;

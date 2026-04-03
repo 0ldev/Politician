@@ -428,6 +428,7 @@ private:
         uint8_t  known_sta_count;
         uint8_t  beacon_count;          // Times this AP has been observed
         uint8_t  total_attempts;        // Total failed attack attempts against this AP
+        char     country[3];            // IE 7 country code (e.g. "US"), empty if absent
     };
     ApCacheEntry _apCache[MAX_AP_CACHE];
     int          _apCacheCount;

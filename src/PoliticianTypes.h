@@ -107,6 +107,7 @@ struct ApRecord {
     bool     ft_capable;       // 802.11r FT AKM advertised (FT-PSK or FT-EAP)
     uint32_t first_seen_ms;    // millis() timestamp when this AP was first observed
     uint32_t last_seen_ms;     // millis() timestamp of the most recent beacon or probe response
+    char     country[3];       // ISO 3166-1 alpha-2 country code from IE 7 (e.g. "US"), empty if absent
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────
