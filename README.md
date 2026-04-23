@@ -72,6 +72,29 @@ git clone https://github.com/0ldev/Politician.git
 2. In Arduino IDE: **Sketch** → **Include Library** → **Add .ZIP Library**
 3. Select the downloaded ZIP file
 
+### ESP-IDF
+
+Clone the repository into your project's `components/` directory:
+
+```bash
+cd components/
+git clone https://github.com/0ldev/Politician.git
+```
+
+Create a `components/Politician/CMakeLists.txt` component descriptor:
+
+```cmake
+idf_component_register(
+    SRCS
+        "src/Politician.cpp"
+        "src/PoliticianFormat.cpp"
+        "src/PoliticianStress.cpp"
+    INCLUDE_DIRS "src"
+)
+```
+
+`PoliticianStorage.h` is not available under ESP-IDF — it emits a `#error` at compile time if included outside Arduino. Use ESP-IDF's VFS and `nvs_flash` APIs directly for any persistence you need.
+
 ## Quick Start
 
 ### Basic Handshake Capture
@@ -107,6 +130,52 @@ void setup() {
 
 void loop() {
     engine.tick();
+}
+```
+
+### Bare ESP-IDF Quick Start
+
+Under ESP-IDF, `begin()` calls `esp_wifi_init()` internally but expects NVS and the default event loop to already be initialized. Call those before `begin()`, then drive the engine from a FreeRTOS task.
+
+```cpp
+#include <nvs_flash.h>
+#include <esp_event.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <Politician.h>
+
+using namespace politician;
+
+static Politician engine;
+
+static void on_handshake(const HandshakeRecord &rec) {
+    printf("[+] Captured: %s  ch%d  rssi=%d  type=%d\n",
+           rec.ssid, rec.channel, rec.rssi, rec.type);
+}
+
+static void audit_task(void *) {
+    Config cfg;
+    engine.setEapolCallback(on_handshake);
+
+    if (engine.begin(cfg) != OK) {
+        printf("[!] WiFi init failed\n");
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    engine.setAttackMask(ATTACK_ALL);
+
+    for (;;) {
+        engine.tick();
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+extern "C" void app_main(void) {
+    nvs_flash_init();
+    esp_event_loop_create_default();
+
+    xTaskCreate(audit_task, "politician", 8192, nullptr, 5, nullptr);
 }
 ```
 
@@ -664,7 +733,7 @@ Then open `docs/html/index.html` in your browser.
 ## Hardware Requirements
 
 - **Platform**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3 (ESP32-C6 pending Arduino framework support in PlatformIO)
-- **Framework**: Arduino or ESP-IDF
+- **Framework**: Arduino or ESP-IDF — both are supported natively via `src/politician_compat.h`. `PoliticianStorage.h` requires Arduino and will not compile under ESP-IDF.
 - **Memory**: Minimum 4MB flash recommended
 - **Optional**: SD card module for persistent logging
 - **Optional**: GPS module for Wigle integration
