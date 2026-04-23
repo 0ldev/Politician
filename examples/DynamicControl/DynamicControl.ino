@@ -6,7 +6,7 @@ politician::Politician engine;
 
 // Callback for when a handshake is successfully captured
 void onHandshake(const politician::HandshakeRecord &rec) {
-    String hc22000 = politician::format::toHC22000(rec);
+    std::string hc22000 = politician::format::toHC22000(rec);
     Serial.printf("\n[VICTORY] Handshake Captured!\n%s\n\n", hc22000.c_str());
 }
 

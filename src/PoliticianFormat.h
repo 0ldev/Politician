@@ -1,5 +1,6 @@
 #pragma once
-#include <Arduino.h>
+#include <string>
+#include "politician_compat.h"
 #include "PoliticianTypes.h"
 
 namespace politician {
@@ -13,7 +14,7 @@ namespace format {
  * @param rec The handshake record.
  * @return String containing the HC22000 line, or an empty string if unsupported.
  */
-String toHC22000(const HandshakeRecord& rec);
+std::string toHC22000(const HandshakeRecord& rec);
 
 /**
  * @brief Writes a PCAPNG Global Header (SHB + IDB).

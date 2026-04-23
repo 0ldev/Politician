@@ -3,7 +3,7 @@
 namespace politician {
 namespace format {
 
-static void appendHex(String& str, const uint8_t* data, size_t len) {
+static void appendHex(std::string& str, const uint8_t* data, size_t len) {
     char buf[3];
     for (size_t i = 0; i < len; i++) {
         sprintf(buf, "%02x", data[i]);
@@ -11,9 +11,9 @@ static void appendHex(String& str, const uint8_t* data, size_t len) {
     }
 }
 
-String toHC22000(const HandshakeRecord& rec) {
-    if (rec.type == CAP_EAPOL_HALF) return String(); // No anonce — not crackable
-    String out = "WPA*";
+std::string toHC22000(const HandshakeRecord& rec) {
+    if (rec.type == CAP_EAPOL_HALF) return std::string(); // No anonce — not crackable
+    std::string out = "WPA*";
     
     if (rec.type == CAP_PMKID) {
         out += "01*";

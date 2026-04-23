@@ -1,8 +1,13 @@
 #pragma once
 
+#ifndef ARDUINO
+#error "PoliticianStorage.h requires the Arduino framework. Use ESP-IDF VFS and nvs_flash APIs directly."
+#endif
+
 #include <Arduino.h>
 #include <FS.h>
 #include <Preferences.h>
+#include <string>
 #include "Politician.h"
 #include "PoliticianFormat.h"
 
@@ -110,9 +115,9 @@ public:
         fs::File file = fs.open(path, FILE_APPEND);
         if (!file) return false;
 
-        String str = format::toHC22000(rec);
-        if (str.length() > 0) {
-            file.println(str);
+        std::string str = format::toHC22000(rec);
+        if (!str.empty()) {
+            file.println(str.c_str());
             file.flush();
         }
         file.close();
@@ -252,13 +257,17 @@ public:
 class NvsBssidCache {
 private:
     Preferences _prefs;
-    String _ns;
+    char _ns[16];
     static const int MAX_STORED = 128;
     uint8_t _cache[MAX_STORED][6];
     size_t _count;
 
 public:
-    NvsBssidCache(const char* ns = "wardrive") : _ns(ns), _count(0) {
+    NvsBssidCache(const char* ns = "wardrive") : _count(0) {
+        if (strlen(ns) > 15)
+            Serial.println("[NvsBssidCache] WARNING: namespace name exceeds 15 chars and will be truncated");
+        strncpy(_ns, ns, sizeof(_ns) - 1);
+        _ns[sizeof(_ns) - 1] = '\0';
         memset(_cache, 0, sizeof(_cache));
     }
 
@@ -266,7 +275,7 @@ public:
      * @brief Initializes the NVS memory and loads the cached BSSIDs into RAM.
      */
     void begin() {
-        _prefs.begin(_ns.c_str(), false);
+        _prefs.begin(_ns, false);
         size_t bytes = _prefs.getBytes("bssids", _cache, sizeof(_cache));
         _count = bytes / 6;
         if (_count > MAX_STORED) _count = MAX_STORED; // Safety parameter

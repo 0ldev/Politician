@@ -1,6 +1,6 @@
 #pragma once
 #include <stdint.h>
-#include <Arduino.h>
+#include "politician_compat.h"
 
 namespace politician {
 

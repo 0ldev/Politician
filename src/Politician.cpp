@@ -75,7 +75,7 @@ void Politician::_log(const char *fmt, ...) {
     if (_logCb) {
         _logCb(buf);
     } else {
-        Serial.print(buf);
+        printf("%s", buf);
     }
 }
 

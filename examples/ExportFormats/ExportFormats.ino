@@ -13,9 +13,9 @@ void onHandshake(const HandshakeRecord &rec) {
     Serial.printf("SSID: %s\n", rec.ssid);
 
     // 1. Export as HC22000 String
-    String hc22000 = toHC22000(rec);
+    std::string hc22000 = toHC22000(rec);
     Serial.println("--- HC22000 Format ---");
-    Serial.println(hc22000);
+    Serial.println(hc22000.c_str());
 
     // 2. Export as PCAPNG (hex dump to serial)
     Serial.println("--- PCAPNG Hex Dump ---");
