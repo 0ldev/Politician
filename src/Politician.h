@@ -273,6 +273,9 @@ public:
      */
     bool            getClient(const uint8_t *bssid, int idx, uint8_t out_sta[6]) const;
 
+    using _FpHookCb        = void (*)(const uint8_t *mac, const char *ssid, uint8_t ssid_len, uint8_t ch, int8_t rssi, const uint8_t *ie, uint16_t ie_len);
+    void _setFingerprintHook(_FpHookCb cb) { _fpHook = cb; }
+
     using EapolCb          = void (*)(const HandshakeRecord &rec);
     using ApFoundCb        = void (*)(const ApRecord &ap);
     using TargetFilterCb   = bool (*)(const ApRecord &ap);
@@ -403,6 +406,7 @@ private:
     DisruptCb        _disruptCb       = nullptr;
     ClientFoundCb    _clientFoundCb   = nullptr;
     RogueApCb        _rogueApCb       = nullptr;
+    _FpHookCb        _fpHook          = nullptr;
 
     void _log(const char *fmt, ...);
 

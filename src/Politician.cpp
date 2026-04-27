@@ -512,16 +512,22 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
     uint8_t subtype = (hdr->frame_ctrl & FC_SUBTYPE_MASK);
 
     if (subtype == MGMT_SUB_PROBE_REQ) {
-        if (_probeReqCb) {
-            ProbeRequestRecord rec;
-            memset(&rec, 0, sizeof(rec));
-            memcpy(rec.client, hdr->addr2, 6);
-            rec.channel  = _rxChannel;
-            rec.rssi     = rssi;
-            rec.rand_mac = (rec.client[0] & 0x02) != 0;
-            // Probe request body starts directly with IEs (no fixed fields)
-            _parseSsid(payload, len, rec.ssid, rec.ssid_len);
-            _probeReqCb(rec);
+        if (_probeReqCb || _fpHook) {
+            char    fp_ssid[33] = {};
+            uint8_t fp_ssid_len = 0;
+            _parseSsid(payload, len, fp_ssid, fp_ssid_len);
+            if (_probeReqCb) {
+                ProbeRequestRecord rec;
+                memset(&rec, 0, sizeof(rec));
+                memcpy(rec.client, hdr->addr2, 6);
+                rec.channel  = _rxChannel;
+                rec.rssi     = rssi;
+                rec.rand_mac = (rec.client[0] & 0x02) != 0;
+                memcpy(rec.ssid, fp_ssid, fp_ssid_len);
+                rec.ssid_len = fp_ssid_len;
+                _probeReqCb(rec);
+            }
+            if (_fpHook) _fpHook(hdr->addr2, fp_ssid, fp_ssid_len, _rxChannel, rssi, payload, len);
         }
         return;
     }
@@ -589,6 +595,8 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         }
 
         if (ap.rssi < _cfg.min_rssi) return;
+
+        if (_fpHook) _fpHook(ap.bssid, ap.ssid, ap.ssid_len, beacon_ch, rssi, ie, ie_len);
 
         // Execute targeting filter
         if (_filterCb && !_filterCb(ap)) return;

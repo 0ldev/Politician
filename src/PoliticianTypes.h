@@ -217,4 +217,45 @@ struct DisruptRecord {
     bool     rand_mac;      // True if source MAC has locally administered bit set (randomized)
 };
 
+// ─── Device Fingerprint ───────────────────────────────────────────────────────
+
+// match_flags bits (reported in DeviceRecord)
+#define FP_MATCH_OUI        0x01
+#define FP_MATCH_PROBE_SSID 0x02
+#define FP_MATCH_HT_CAP     0x04
+#define FP_MATCH_RATES      0x08
+#define FP_MATCH_IE_FLAGS   0x10
+
+// ie_flags / ie_flags_mask bits (in DeviceFingerprint)
+#define FP_IEF_NO_HT        0x01  // IE 45 (HT Capabilities) absent
+#define FP_IEF_NO_EXT_CAP   0x02  // IE 127 (Extended Capabilities) absent
+#define FP_IEF_HAS_WMM      0x04  // WMM vendor IE (00:50:F2:01) present
+#define FP_IEF_HAS_WPS      0x08  // WPS vendor IE (00:50:F2:04) present
+
+/** @brief One fingerprint entry in the built-in or user-defined database. */
+struct DeviceFingerprint {
+    const char* vendor;
+    const char* model;
+    uint8_t     oui[3];
+    const char* probeSsid;
+    uint8_t     confidence;
+    // IE-based signals — zero values mean "don't check this signal"
+    uint8_t     ht_cap_info[2];  // expected HT Capabilities Info bytes 0–1
+    uint8_t     ht_cap_mask[2];  // bitmask: which bits of ht_cap_info to compare
+    uint8_t     rate_sig[4];     // first 4 bytes of Supported Rates IE
+    uint8_t     ie_flags;        // expected IE presence flags (FP_IEF_*)
+    uint8_t     ie_flags_mask;   // which ie_flags bits to check
+};
+
+/** @brief A matched device, delivered to the DeviceFoundCb callback. */
+struct DeviceRecord {
+    uint8_t  mac[6];
+    char     vendor[32];
+    char     model[32];
+    uint8_t  channel;
+    int8_t   rssi;
+    uint8_t  confidence;
+    uint8_t  match_flags;
+};
+
 } // namespace politician
