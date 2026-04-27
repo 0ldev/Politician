@@ -13,6 +13,7 @@ Politician is an embedded C++ library designed for WiFi security auditing on ESP
 - **CSA (Channel Switch Announcement) Injection**: Modern alternative to deauthentication attacks
 - **Enterprise Credential Harvesting**: Capture EAP-Identity frames from 802.1X networks  
 - **Hidden Network Discovery**: Automatic SSID decloaking via probe response interception
+- **Device Fingerprinting**: Passively identify 150+ consumer IoT/smart home brands via MAC OUI and IE signatures without network association
 - **Client Stimulation**: Wake sleeping mobile devices using QoS Null Data frames
 - **WPA3/PMF Detection**: Intelligent filtering to skip Protected Management Frame-enabled networks
 - **Export Formats**: PCAPNG capture files; optional HC22000 text export for direct Hashcat ingestion
@@ -707,6 +708,7 @@ The library includes complete examples demonstrating various use cases:
 
 | Example | Description |
 |---------|-------------|
+| `DeviceFingerprinting` | Passive discovery of IoT and consumer electronics |
 | `TargetedAuditing` | Network filtering with callbacks |
 | `EnterpriseAuditing` | 802.1X identity harvesting |
 | `StorageAndNVS` | SD card PCAPNG logging and NVS persistence |
