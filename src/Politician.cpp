@@ -149,7 +149,10 @@ Error Politician::begin(const Config &cfg) {
 // ─── Active gate ──────────────────────────────────────────────────────────────
 void Politician::setActive(bool active) {
     if (!_initialized) return;
-    _active = active;
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _active = active;
+        xSemaphoreGiveRecursive(_lock);
+    }
     _log("[WiFi] Capture %s\n", active ? "ACTIVE" : "IDLE");
 }
 
@@ -157,105 +160,125 @@ void Politician::setActive(bool active) {
 Error Politician::setChannel(uint8_t ch) {
     if (!_initialized) return ERR_NOT_ACTIVE;
     if (!isValidChannel(ch)) return ERR_INVALID_CH;
-    _channel = ch;
-    esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE);
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _channel = ch;
+        esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE);
+        xSemaphoreGiveRecursive(_lock);
+    }
     return OK;
 }
 
 Error Politician::lockChannel(uint8_t ch) {
-    _hopping = false;
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _hopping = false;
+        xSemaphoreGiveRecursive(_lock);
+    }
     return setChannel(ch);
 }
 
 void Politician::setIgnoreList(const uint8_t (*bssids)[6], uint8_t count) {
-    _ignoreCount = (count > MAX_IGNORE) ? MAX_IGNORE : count;
-    for (uint8_t i = 0; i < _ignoreCount; i++) {
-        memcpy(_ignoreList[i], bssids[i], 6);
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _ignoreCount = (count > MAX_IGNORE) ? MAX_IGNORE : count;
+        for (uint8_t i = 0; i < _ignoreCount; i++) {
+            memcpy(_ignoreList[i], bssids[i], 6);
+        }
+        xSemaphoreGiveRecursive(_lock);
     }
-    _log("[WiFi] Ignore list updated: %d BSSIDs\n", _ignoreCount);
+    _log("[WiFi] Ignore list updated: %d BSSIDs\n", count);
 }
 
 void Politician::clearCapturedList() {
-    _capturedCount = 0;
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _capturedCount = 0;
+        xSemaphoreGiveRecursive(_lock);
+    }
     _log("[WiFi] Captured list cleared\n");
 }
 
 void Politician::markCaptured(const uint8_t *bssid) {
-    if (_isCaptured(bssid)) return;
-    if (_capturedCount >= MAX_CAPTURED) {
-        _log("[Cap] List full — %02X:%02X:%02X:%02X:%02X:%02X not marked\n",
-            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
-        return;
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _markCaptured(bssid);
+        xSemaphoreGiveRecursive(_lock);
     }
-    
-    int pos = 0;
-    while (pos < _capturedCount && memcmp(_captured[pos], bssid, 6) < 0) pos++;
-    
-    if (pos < _capturedCount) {
-        memmove(&_captured[pos + 1], &_captured[pos], (_capturedCount - pos) * 6);
-    }
-    memcpy(_captured[pos], bssid, 6);
-    _capturedCount++;
-    
-    _log("[Cap] Marked %02X:%02X:%02X:%02X:%02X:%02X — won't re-capture\n",
-        bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
 }
 
 void Politician::startHopping(uint16_t dwellMs) {
     if (!_initialized) return;
-    _hopping    = true;
-    _active     = true;
-    _hopIndex   = 0;
-    _lastHopMs  = millis();
-    _channelTrafficSeen = false;
-    if (dwellMs > 0) _cfg.hop_dwell_ms = dwellMs;
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _hopping    = true;
+        _active     = true;
+        _hopIndex   = 0;
+        _lastHopMs  = millis();
+        _channelTrafficSeen = false;
+        if (dwellMs > 0) _cfg.hop_dwell_ms = dwellMs;
+        xSemaphoreGiveRecursive(_lock);
+    }
     _log("[WiFi] Hopping started dwell=%dms (smart=%s)\n", _cfg.hop_dwell_ms, _cfg.smart_hopping ? "on" : "off");
 }
 
 void Politician::stopHopping() {
-    _hopping = false;
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _hopping = false;
+        xSemaphoreGiveRecursive(_lock);
+    }
 }
 
 void Politician::stop() {
-    if (_fishState != FISH_IDLE) {
-        esp_wifi_disconnect();
-        _fishState = FISH_IDLE;
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (_fishState != FISH_IDLE) {
+            esp_wifi_disconnect();
+            _fishState = FISH_IDLE;
+        }
+        _hopping          = false;
+        _hasTarget        = false;
+        _autoTarget       = false;
+        _autoTargetActive = false;
+        _m1Locked         = false;
+        _probeLocked      = false;
+        _active           = false;
+        xSemaphoreGiveRecursive(_lock);
     }
-    _hopping          = false;
-    _hasTarget        = false;
-    _autoTarget       = false;
-    _autoTargetActive = false;
-    _m1Locked         = false;
-    _probeLocked      = false;
-    _active           = false;
     _log("[WiFi] Engine stopped\n");
 }
 
 // ─── Attack mask ──────────────────────────────────────────────────────────────
 void Politician::setAttackMask(uint8_t mask) {
-    _attackMask = mask;
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _attackMask = mask;
+        xSemaphoreGiveRecursive(_lock);
+    }
     _log("[WiFi] Attack mask: PMKID=%d CSA=%d PASSIVE=%d\n",
         !!(mask & ATTACK_PMKID), !!(mask & ATTACK_CSA), !!(mask & ATTACK_PASSIVE));
 }
 
 void Politician::setAttackMaskForBssid(const uint8_t *bssid, uint8_t mask) {
-    for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
-        if (_attackOverrides[i].active && memcmp(_attackOverrides[i].bssid, bssid, 6) == 0) {
-            _attackOverrides[i].mask = mask; return;
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
+            if (_attackOverrides[i].active && memcmp(_attackOverrides[i].bssid, bssid, 6) == 0) {
+                _attackOverrides[i].mask = mask; 
+                xSemaphoreGiveRecursive(_lock);
+                return;
+            }
         }
-    }
-    for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
-        if (!_attackOverrides[i].active) {
-            _attackOverrides[i].active = true;
-            memcpy(_attackOverrides[i].bssid, bssid, 6);
-            _attackOverrides[i].mask = mask; return;
+        for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
+            if (!_attackOverrides[i].active) {
+                _attackOverrides[i].active = true;
+                memcpy(_attackOverrides[i].bssid, bssid, 6);
+                _attackOverrides[i].mask = mask; 
+                xSemaphoreGiveRecursive(_lock);
+                return;
+            }
         }
+        xSemaphoreGiveRecursive(_lock);
     }
     _log("[Attack] Override table full — ignoring per-BSSID mask request\n");
 }
 
 void Politician::clearAttackMaskOverrides() {
-    memset(_attackOverrides, 0, sizeof(_attackOverrides));
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        memset(_attackOverrides, 0, sizeof(_attackOverrides));
+        xSemaphoreGiveRecursive(_lock);
+    }
 }
 
 uint8_t Politician::_getAttackMask(const uint8_t *bssid) const {
@@ -300,8 +323,11 @@ Error Politician::setTarget(const uint8_t *bssid, uint8_t channel) {
 }
 
 void Politician::clearTarget() {
-    _hasTarget = false;
-    memset(_targetBssid, 0, 6);
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _hasTarget = false;
+        memset(_targetBssid, 0, 6);
+        xSemaphoreGiveRecursive(_lock);
+    }
     _log("[WiFi] Target cleared — wardriving mode\n");
 }
 
@@ -350,33 +376,41 @@ Error Politician::injectCustomFrame(const uint8_t *payload, size_t len, uint8_t 
 }
 
 void Politician::setChannelList(const uint8_t *channels, uint8_t count) {
-    if (count == 0 || channels == nullptr) {
-        _customChannelCount = 0;
-        _hopIndex = 0;
-        _log("[WiFi] Channel list cleared — hopping all channels\n");
-        return;
-    }
-    _customChannelCount = 0;
-    for (uint8_t i = 0; i < count && i < POLITICIAN_MAX_CHANNELS; i++) {
-        if (isValidChannel(channels[i])) {
-            _customChannels[_customChannelCount++] = channels[i];
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (count == 0 || channels == nullptr) {
+            _customChannelCount = 0;
+            _hopIndex = 0;
+            xSemaphoreGiveRecursive(_lock);
+            _log("[WiFi] Channel list cleared — hopping all channels\n");
+            return;
         }
+        _customChannelCount = 0;
+        for (uint8_t i = 0; i < count && i < POLITICIAN_MAX_CHANNELS; i++) {
+            if (isValidChannel(channels[i])) {
+                _customChannels[_customChannelCount++] = channels[i];
+            }
+        }
+        _hopIndex = 0;
+        xSemaphoreGiveRecursive(_lock);
     }
-    _hopIndex = 0;
     _log("[WiFi] Channel list set: %d channels\n", _customChannelCount);
 }
 
 void Politician::setChannelBands(bool ghz24, bool ghz5) {
-    _customChannelCount = 0;
-    if (ghz24) {
-        for (uint8_t i = 0; i < HOP_COUNT && _customChannelCount < POLITICIAN_MAX_CHANNELS; i++) {
-            _customChannels[_customChannelCount++] = HOP_SEQ[i];
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _customChannelCount = 0;
+        if (ghz24) {
+            for (uint8_t i = 0; i < HOP_COUNT && _customChannelCount < POLITICIAN_MAX_CHANNELS; i++) {
+                _customChannels[_customChannelCount++] = HOP_SEQ[i];
+            }
         }
-    }
-    if (ghz5) {
-        for (uint8_t i = 0; i < sizeof(CHANNEL_5GHZ_COMMON) && _customChannelCount < POLITICIAN_MAX_CHANNELS; i++) {
-            _customChannels[_customChannelCount++] = CHANNEL_5GHZ_COMMON[i];
+        if (ghz5) {
+            for (uint8_t i = 0; i < sizeof(CHANNEL_5GHZ_COMMON) && _customChannelCount < POLITICIAN_MAX_CHANNELS; i++) {
+                _customChannels[_customChannelCount++] = CHANNEL_5GHZ_COMMON[i];
+            }
         }
+        _hopIndex = 0;
+        xSemaphoreGiveRecursive(_lock);
     }
     if (_customChannelCount == 0) {
         _log("[WiFi] setChannelBands: no bands selected — reverting to default 2.4GHz\n");
@@ -384,7 +418,6 @@ void Politician::setChannelBands(bool ghz24, bool ghz5) {
         _log("[WiFi] Channel bands set: %d channels (2.4GHz=%d 5GHz=%d)\n",
              _customChannelCount, (int)ghz24, (int)ghz5);
     }
-    _hopIndex = 0;
 }
 
 Error Politician::setTargetBySsid(const char *ssid) {
@@ -392,22 +425,32 @@ Error Politician::setTargetBySsid(const char *ssid) {
     uint8_t ssid_len = (uint8_t)strlen(ssid);
     int best = -1;
     int8_t best_rssi = INT8_MIN;
-    for (int i = 0; i < MAX_AP_CACHE; i++) {
-        if (!_apCache[i].active) continue;
-        if (_apCache[i].ssid_len != ssid_len) continue;
-        if (memcmp(_apCache[i].ssid, ssid, ssid_len) != 0) continue;
-        if (_apCache[i].rssi > best_rssi) {
-            best_rssi = _apCache[i].rssi;
-            best = i;
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        for (int i = 0; i < MAX_AP_CACHE; i++) {
+            if (!_apCache[i].active) continue;
+            if (_apCache[i].ssid_len != ssid_len) continue;
+            if (memcmp(_apCache[i].ssid, ssid, ssid_len) != 0) continue;
+            if (_apCache[i].rssi > best_rssi) {
+                best_rssi = _apCache[i].rssi;
+                best = i;
+            }
         }
+        xSemaphoreGiveRecursive(_lock);
     }
     if (best == -1) return ERR_NOT_FOUND;
     return setTarget(_apCache[best].bssid, _apCache[best].channel);
 }
 
 void Politician::setAutoTarget(bool enable) {
-    _autoTarget = enable;
-    if (!enable) { clearTarget(); _autoTargetActive = false; }
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        _autoTarget = enable;
+        if (!enable) {
+            _hasTarget = false;
+            memset(_targetBssid, 0, 6);
+            _autoTargetActive = false;
+        }
+        xSemaphoreGiveRecursive(_lock);
+    }
     _log("[AutoTarget] %s\n", enable ? "enabled" : "disabled");
 }
 
@@ -1826,10 +1869,13 @@ void Politician::_expireSessions(uint32_t timeoutMs) {
 
 const char* Politician::getVendor(const uint8_t *mac) {
 #if POLITICIAN_FP_DB > 0
-    for (size_t i = 0; i < fingerprint::_FP_BUILTIN_DB_COUNT; i++) {
-        if (memcmp(fingerprint::_FP_BUILTIN_DB[i].oui, mac, 3) == 0) {
-            return fingerprint::_FP_BUILTIN_DB[i].vendor;
-        }
+    int left = 0, right = fingerprint::_FP_OUI_DB_COUNT - 1;
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+        int cmp = memcmp(fingerprint::_FP_OUI_DB[mid].oui, mac, 3);
+        if (cmp == 0) return fingerprint::_FP_VENDORS[fingerprint::_FP_OUI_DB[mid].vendor_idx];
+        if (cmp < 0) left = mid + 1;
+        else right = mid - 1;
     }
 #endif
     return "";
