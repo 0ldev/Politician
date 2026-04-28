@@ -43,6 +43,7 @@ struct ProbeRequestRecord;
 struct DisruptRecord;
 
 typedef void (*ApFoundCb)(const ApRecord &ap);
+typedef int  (*TargetScoreCb)(const ApRecord &ap, const char *vendor); // Returns a priority score for autoTarget
 typedef void (*PacketCb)(const uint8_t *payload, uint16_t len, int8_t rssi, uint8_t channel, uint32_t ts_usec);
 typedef void (*EapolCb)(const HandshakeRecord &rec);
 typedef void (*IdentityCb)(const EapIdentityRecord &rec);

@@ -2,6 +2,14 @@
 #include <string.h>
 #include <esp_log.h>
 
+#ifndef POLITICIAN_FP_DB
+#define POLITICIAN_FP_DB 1
+#endif
+
+#if POLITICIAN_FP_DB > 0
+#include "PoliticianFingerprintDB.h"
+#endif
+
 namespace politician {
 
 // ─── Static members ───────────────────────────────────────────────────────────
@@ -417,21 +425,48 @@ void Politician::tick() {
     }
 
     if (_autoTarget && !_autoTargetActive && _fishState == FISH_IDLE && !_probeLocked && !_m1Locked) {
-        int best = -1; int8_t best_rssi = INT8_MIN;
+        int best = -1; int best_score = -9999;
         for (int i = 0; i < MAX_AP_CACHE; i++) {
             if (!_apCache[i].active || _isCaptured(_apCache[i].bssid)) continue;
             if (_cfg.skip_immune_networks && _apCache[i].is_wpa3_only) continue;
             if (_apCache[i].enc < 2) continue; // Skip open/WEP
             if (_cfg.min_beacon_count > 0 && _apCache[i].beacon_count < _cfg.min_beacon_count) continue;
             if (_cfg.require_active_clients && !_apCache[i].has_active_clients) continue;
-            if (_apCache[i].rssi > best_rssi) { best_rssi = _apCache[i].rssi; best = i; }
+            
+            int score = _apCache[i].rssi;
+            if (_targetScoreCb) {
+                ApRecord ap_rec;
+                memcpy(ap_rec.bssid, _apCache[i].bssid, 6);
+                memcpy(ap_rec.ssid,  _apCache[i].ssid,  33);
+                ap_rec.ssid_len       = _apCache[i].ssid_len;
+                ap_rec.enc            = _apCache[i].enc;
+                ap_rec.channel        = _apCache[i].channel;
+                ap_rec.rssi           = _apCache[i].rssi;
+                ap_rec.wps_enabled    = _apCache[i].wps_enabled;
+                ap_rec.pmf_capable    = _apCache[i].pmf_capable;
+                ap_rec.pmf_required   = _apCache[i].pmf_required;
+                ap_rec.total_attempts = _apCache[i].total_attempts;
+                ap_rec.captured       = false; // already checked above
+                ap_rec.ft_capable     = _apCache[i].ft_capable;
+                ap_rec.first_seen_ms  = _apCache[i].first_seen_ms;
+                ap_rec.last_seen_ms   = _apCache[i].last_seen_ms;
+                memcpy(ap_rec.country, _apCache[i].country, 3);
+                ap_rec.beacon_interval = _apCache[i].beacon_interval;
+                ap_rec.max_rate_mbps   = _apCache[i].max_rate_mbps;
+                ap_rec.is_hidden       = _apCache[i].is_hidden;
+                
+                score = _targetScoreCb(ap_rec, getVendor(ap_rec.bssid));
+            }
+            
+            if (score > best_score) { best_score = score; best = i; }
         }
         if (best >= 0) {
             _autoTargetActive = true;
             setTarget(_apCache[best].bssid, _apCache[best].channel);
-            _log("[AutoTarget] → %02X:%02X:%02X:%02X:%02X:%02X SSID=%s rssi=%d\n",
+            _log("[AutoTarget] → %02X:%02X:%02X:%02X:%02X:%02X SSID=%s rssi=%d score=%d\n",
                 _apCache[best].bssid[0], _apCache[best].bssid[1], _apCache[best].bssid[2],
-                _apCache[best].ssid, _apCache[best].rssi);
+                _apCache[best].bssid[3], _apCache[best].bssid[4], _apCache[best].bssid[5],
+                _apCache[best].ssid, _apCache[best].rssi, best_score);
         }
     }
 
@@ -1657,6 +1692,17 @@ void Politician::_markCaptured(const uint8_t *bssid) {
 void Politician::_expireSessions(uint32_t timeoutMs) {
     uint32_t now = millis();
     for (int i = 0; i < MAX_SESSIONS; i++) if (_sessions[i].active && (now - _sessions[i].created_ms) > timeoutMs) _sessions[i].active = false;
+}
+
+const char* Politician::getVendor(const uint8_t *mac) {
+#if POLITICIAN_FP_DB > 0
+    for (size_t i = 0; i < fingerprint::_FP_BUILTIN_DB_COUNT; i++) {
+        if (memcmp(fingerprint::_FP_BUILTIN_DB[i].oui, mac, 3) == 0) {
+            return fingerprint::_FP_BUILTIN_DB[i].vendor;
+        }
+    }
+#endif
+    return "";
 }
 
 void Politician::_randomizeMac() {

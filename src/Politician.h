@@ -283,12 +283,25 @@ public:
     using EapolCb          = void (*)(const HandshakeRecord &rec);
     using ApFoundCb        = void (*)(const ApRecord &ap);
     using TargetFilterCb   = bool (*)(const ApRecord &ap);
+    using TargetScoreCb    = int  (*)(const ApRecord &ap, const char *vendor);
     using PacketCb         = void (*)(const uint8_t *payload, uint16_t len, int8_t rssi, uint8_t channel, uint32_t ts_usec);
     using IdentityCb       = void (*)(const EapIdentityRecord &rec);
     using AttackResultCb   = void (*)(const AttackResultRecord &rec);
     using ProbeRequestCb   = void (*)(const ProbeRequestRecord &rec);
     using DisruptCb        = void (*)(const DisruptRecord &rec);
     using ClientFoundCb    = void (*)(const uint8_t *bssid, const uint8_t *sta, int8_t rssi);
+
+    /**
+     * @brief Looks up the vendor name for a given MAC address (OUI).
+     * @param mac 6-byte MAC address.
+     * @return The vendor string (e.g., "Apple") or an empty string if unknown.
+     */
+    static const char* getVendor(const uint8_t *mac);
+
+    /**
+     * @brief Sets the callback for calculating a custom priority score during autoTarget.
+     */
+    void setTargetScoreCallback(TargetScoreCb cb) { _targetScoreCb = cb; }
 
     /**
      * @brief Sets the callback for when a handshake (EAPOL or PMKID) is captured.
@@ -404,6 +417,7 @@ private:
     uint8_t          _lastCapSta[6]    = {};
     uint32_t         _lastCapMs        = 0;
 
+    TargetScoreCb    _targetScoreCb   = nullptr;
     LogCb            _logCb           = nullptr;
     ApFoundCb        _apFoundCb       = nullptr;
     TargetFilterCb   _filterCb        = nullptr;
