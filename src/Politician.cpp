@@ -43,7 +43,7 @@ static bool isValidChannel(uint8_t ch) {
 
 // ─── Constructor ──────────────────────────────────────────────────────────────
 Politician::Politician()
-    : _active(false), _channel(1), _rxChannel(1), _hopping(false),
+    : _active(false), _channel(1), _rxChannel(1), _hopping(false), _channelTrafficSeen(false),
       _lastHopMs(0), _lastRssi(0), _hopIndex(0),
       _m1Locked(false), _m1LockEndMs(0),
       _probeLocked(false), _probeLockEndMs(0),
@@ -176,9 +176,6 @@ void Politician::setIgnoreList(const uint8_t (*bssids)[6], uint8_t count) {
 }
 
 void Politician::clearCapturedList() {
-    for (int i = 0; i < MAX_CAPTURED; i++) {
-        _captured[i].active = false;
-    }
     _capturedCount = 0;
     _log("[WiFi] Captured list cleared\n");
 }
@@ -190,9 +187,16 @@ void Politician::markCaptured(const uint8_t *bssid) {
             bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
         return;
     }
-    _captured[_capturedCount].active = true;
-    memcpy(_captured[_capturedCount].bssid, bssid, 6);
+    
+    int pos = 0;
+    while (pos < _capturedCount && memcmp(_captured[pos], bssid, 6) < 0) pos++;
+    
+    if (pos < _capturedCount) {
+        memmove(&_captured[pos + 1], &_captured[pos], (_capturedCount - pos) * 6);
+    }
+    memcpy(_captured[pos], bssid, 6);
     _capturedCount++;
+    
     _log("[Cap] Marked %02X:%02X:%02X:%02X:%02X:%02X — won't re-capture\n",
         bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
 }
@@ -203,8 +207,9 @@ void Politician::startHopping(uint16_t dwellMs) {
     _active     = true;
     _hopIndex   = 0;
     _lastHopMs  = millis();
+    _channelTrafficSeen = false;
     if (dwellMs > 0) _cfg.hop_dwell_ms = dwellMs;
-    _log("[WiFi] Hopping started dwell=%dms\n", _cfg.hop_dwell_ms);
+    _log("[WiFi] Hopping started dwell=%dms (smart=%s)\n", _cfg.hop_dwell_ms, _cfg.smart_hopping ? "on" : "off");
 }
 
 void Politician::stopHopping() {
@@ -532,13 +537,24 @@ void Politician::tick() {
     }
 
     bool locked = _m1Locked || _probeLocked || _hasTarget;
-    if (!locked && (now - _lastHopMs >= _cfg.hop_dwell_ms)) {
+    uint32_t current_dwell = _cfg.hop_dwell_ms;
+    if (_cfg.smart_hopping && !locked) {
+        // Evaluate early exit or extended dwell
+        if (!_channelTrafficSeen && (now - _lastHopMs >= _cfg.hop_min_dwell_ms)) {
+            current_dwell = _cfg.hop_min_dwell_ms;
+        } else if (_channelTrafficSeen) {
+            current_dwell = _cfg.hop_max_dwell_ms;
+        }
+    }
+
+    if (!locked && (now - _lastHopMs >= current_dwell)) {
         const uint8_t *seq   = (_customChannelCount > 0) ? _customChannels : HOP_SEQ;
         uint8_t        count = (_customChannelCount > 0) ? _customChannelCount : HOP_COUNT;
         _hopIndex  = (_hopIndex + 1) % count;
         _channel   = seq[_hopIndex];
         esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE);
         _lastHopMs = now;
+        _channelTrafficSeen = false;
         
         // Process inject queue for the new channel
         for (int i = 0; i < MAX_INJECT_QUEUE; i++) {
@@ -614,6 +630,7 @@ void Politician::_handleFrame(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuou
     uint16_t sig_len = pkt->rx_ctrl.sig_len;
     if (sig_len < sizeof(ieee80211_hdr_t)) return;
 
+    _channelTrafficSeen = true;
     _stats.total++;
     _lastRssi  = (int8_t)pkt->rx_ctrl.rssi;
     _rxChannel = pkt->rx_ctrl.channel;
@@ -1739,7 +1756,15 @@ bool Politician::_lookupEnc(const uint8_t *bssid, uint8_t &out_enc) {
 
 bool Politician::_isCaptured(const uint8_t *bssid) const {
     for (int i = 0; i < _ignoreCount; i++) if (memcmp(_ignoreList[i], bssid, 6) == 0) return true;
-    for (int i = 0; i < MAX_CAPTURED; i++) if (_captured[i].active && memcmp(_captured[i].bssid, bssid, 6) == 0) return true;
+    
+    int left = 0, right = _capturedCount - 1;
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+        int cmp = memcmp(_captured[mid], bssid, 6);
+        if (cmp == 0) return true;
+        if (cmp < 0) left = mid + 1;
+        else right = mid - 1;
+    }
     return false;
 }
 
@@ -1781,7 +1806,16 @@ void Politician::_markCapturedSsidGroup(const char *ssid, uint8_t ssid_len) {
 void Politician::_markCaptured(const uint8_t *bssid) {
     if (_isCaptured(bssid)) return;
     if (_capturedCount >= MAX_CAPTURED) return; // list full — never overwrite existing entries
-    _captured[_capturedCount].active = true; memcpy(_captured[_capturedCount].bssid, bssid, 6); _capturedCount++;
+    
+    int pos = 0;
+    while (pos < _capturedCount && memcmp(_captured[pos], bssid, 6) < 0) pos++;
+    
+    if (pos < _capturedCount) {
+        memmove(&_captured[pos + 1], &_captured[pos], (_capturedCount - pos) * 6);
+    }
+    memcpy(_captured[pos], bssid, 6);
+    _capturedCount++;
+    
     _log("[Cap] Marked %02X:%02X:%02X:%02X:%02X:%02X\n", bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
 }
 

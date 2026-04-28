@@ -65,6 +65,9 @@ enum Error {
  */
 struct Config {
     uint16_t hop_dwell_ms        = 200;  // Time per channel
+    bool     smart_hopping       = true; // Dynamic channel dwell time based on traffic
+    uint16_t hop_min_dwell_ms    = 50;   // Minimum dwell if no traffic is seen
+    uint16_t hop_max_dwell_ms    = 400;  // Maximum dwell if traffic is active
     uint32_t m1_lock_ms          = 800;  // How long to stay on channel after seeing M1
     uint32_t fish_timeout_ms     = 2000; // Time for PMKID association
     uint8_t  fish_max_retries    = 2;    // PMKID retries before giving up or CSA

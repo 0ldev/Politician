@@ -402,6 +402,7 @@ private:
     uint8_t    _channel;
     uint8_t    _rxChannel;
     bool       _hopping;
+    bool       _channelTrafficSeen;
     uint32_t   _lastHopMs;
     int8_t     _lastRssi;
     uint8_t    _hopIndex;
@@ -562,12 +563,8 @@ private:
     void     _expireSessions(uint32_t timeoutMs);
 
     static const int MAX_CAPTURED = POLITICIAN_MAX_CAPTURED;
-    struct CapturedEntry {
-        bool    active;
-        uint8_t bssid[6];
-    };
-    CapturedEntry _captured[MAX_CAPTURED];
-    int           _capturedCount;
+    uint8_t _captured[MAX_CAPTURED][6];
+    int     _capturedCount;
 
     bool _isCaptured(const uint8_t *bssid) const;
 
