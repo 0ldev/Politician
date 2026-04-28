@@ -10,6 +10,7 @@ namespace politician {
 #define CAP_EAPOL_CSA       0x03  // EAPOL triggered by CSA beacon injection
 #define CAP_EAPOL_HALF      0x04  // M2-only capture (no anonce) — active attack pivot triggered
 #define CAP_EAPOL_GROUP     0x05  // Non-pairwise EAPOL-Key (GTK rotation)
+#define CAP_SAE             0x06  // WPA3 SAE (Simultaneous Authentication of Equals) Commit/Confirm frame
 
 // ─── Attack Selection Bits ────────────────────────────────────────────────────
 #define ATTACK_PMKID         0x01  // PMKID fishing
@@ -42,7 +43,7 @@ struct ProbeRequestRecord;
 struct DisruptRecord;
 
 typedef void (*ApFoundCb)(const ApRecord &ap);
-typedef void (*PacketCb)(const uint8_t *payload, uint16_t len, int8_t rssi, uint32_t ts_usec);
+typedef void (*PacketCb)(const uint8_t *payload, uint16_t len, int8_t rssi, uint8_t channel, uint32_t ts_usec);
 typedef void (*EapolCb)(const HandshakeRecord &rec);
 typedef void (*IdentityCb)(const EapIdentityRecord &rec);
 typedef void (*ProbeRequestCb)(const ProbeRequestRecord &rec);
@@ -122,10 +123,13 @@ struct Stats {
     uint32_t data;
     uint32_t eapol;
     uint32_t pmkid_found;
+    uint32_t sae_found;
     uint32_t beacons;
     uint32_t captures;
     uint32_t failed_pmkid;      // PMKID retries exhausted without capture
     uint32_t failed_csa;        // CSA/Deauth wait expired without EAPOL
+    volatile uint32_t dropped;  // Frames dropped due to ringbuffer overflow
+    uint32_t rb_max;            // Max observed ringbuffer usage (bytes)
     uint16_t channel_frames[14]; // Frames received per 2.4GHz channel (index 0 = ch1, index 13 = ch14)
 };
 
@@ -144,11 +148,27 @@ struct HandshakeRecord {
     uint8_t  pmkid[16];
     // EAPOL path
     uint8_t  anonce[32];
+    uint8_t  snonce[32];
     uint8_t  mic[16];
-    uint8_t  eapol_m2[256];
-    uint16_t eapol_m2_len;
+    union {
+        uint8_t  eapol_m2[256];
+        uint8_t  sae_data[256]; 
+    };
+    uint8_t  eapol_m3[256];
+    uint8_t  eapol_m4[256];
+    union {
+        uint16_t eapol_m2_len;
+        uint16_t sae_len;
+    };
+    uint16_t eapol_m3_len;
+    uint16_t eapol_m4_len;
     bool     has_mic;
     bool     has_anonce;
+    bool     has_snonce;
+    bool     has_m3;
+    bool     has_m4;
+    bool     is_full;       // True if this is a complete 4-way sequence or full SAE exchange
+    uint8_t  sae_seq;       // SAE Auth Sequence (1=Commit, 2=Confirm)
 };
 
 // ─── Attack Result ────────────────────────────────────────────────────────────

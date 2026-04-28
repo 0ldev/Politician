@@ -486,9 +486,8 @@ size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max
 
 // Serialize a raw 802.11 frame into a PCAPNG Enhanced Packet Block
 size_t writePcapngPacket(const uint8_t* payload, size_t len,
-                         int8_t rssi, uint64_t ts_usec,
-                         uint8_t* buffer, size_t max_len);
-```
+                        int8_t rssi, uint8_t channel, uint64_t ts_usec, 
+                        uint8_t* buffer, size_t max_len);```
 
 ### Stress Utilities (Opt-in)
 

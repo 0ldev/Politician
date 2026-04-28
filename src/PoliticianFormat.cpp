@@ -1,4 +1,5 @@
 #include "PoliticianFormat.h"
+#include "politician_compat.h"
 
 namespace politician {
 namespace format {
@@ -13,34 +14,59 @@ static void appendHex(std::string& str, const uint8_t* data, size_t len) {
 
 std::string toHC22000(const HandshakeRecord& rec) {
     if (rec.type == CAP_EAPOL_HALF) return std::string(); // No anonce — not crackable
+    
+    // Hashcat 22000 Format:
+    // WPA*TYPE*MIC*BSSID*STA*SSID*ANONCE*EAPOL*KEYVER*KEYDATA
+    
     std::string out = "WPA*";
     
-    if (rec.type == CAP_PMKID) {
-        out += "01*";
-        appendHex(out, rec.pmkid, 16);
-        out += "*";
+    // 1. TYPE
+    if (rec.type == CAP_PMKID) out += "01*";
+    else if (rec.type == CAP_SAE) out += "06*";
+    else out += "02*";
+
+    // 2. MIC (Field 3)
+    if (rec.type == CAP_PMKID || rec.type == CAP_SAE) {
+        out += "*"; // Empty for PMKID/SAE
     } else {
-        out += "02*";
         appendHex(out, rec.mic, 16);
         out += "*";
     }
 
+    // 3. BSSID (Field 4)
     appendHex(out, rec.bssid, 6);
     out += "*";
+
+    // 4. STA (Field 5)
     appendHex(out, rec.sta, 6);
     out += "*";
+
+    // 5. SSID (Field 6)
     appendHex(out, (const uint8_t*)rec.ssid, rec.ssid_len);
     out += "*";
 
-    if (rec.type == CAP_PMKID) {
-        out += "**";
-    } else {
+    // 6. ANONCE (Field 7)
+    if (rec.type == CAP_EAPOL || rec.type == CAP_EAPOL_CSA) {
         appendHex(out, rec.anonce, 32);
-        out += "*";
-        appendHex(out, rec.eapol_m2, rec.eapol_m2_len);
-        out += "*";
     }
+    out += "*";
 
+    // 7. EAPOL/M2 (Field 8)
+    if (rec.type == CAP_EAPOL || rec.type == CAP_EAPOL_CSA) {
+        appendHex(out, rec.eapol_m2, rec.eapol_m2_len);
+    }
+    out += "*";
+
+    // 8. KEYVER (Field 9)
+    out += "02*"; // Default to WPA2/AES
+
+    // 9. KEYDATA (Field 10) - Used for PMKID or SAE elements
+    if (rec.type == CAP_PMKID) {
+        appendHex(out, rec.pmkid, 16);
+    } else if (rec.type == CAP_SAE) {
+        appendHex(out, rec.sae_data, rec.sae_len);
+    }
+    
     return out;
 }
 
@@ -80,13 +106,37 @@ size_t writePcapngGlobalHeader(uint8_t* buffer) {
     return offset;
 }
 
-size_t writePcapngPacket(const uint8_t* payload, size_t payload_len, int8_t rssi, uint64_t ts_usec, uint8_t* buffer, size_t max_len) {
-    uint8_t radiotap[8] = { 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    uint32_t cap_len = payload_len + 8;
-    uint32_t pkt_len = payload_len + 8;
-    uint32_t aligned_len = (cap_len + 3) & ~3;
-    uint32_t padding = aligned_len - cap_len;
-    uint32_t block_len = 32 + aligned_len;
+size_t writePcapngPacket(const uint8_t* payload, size_t payload_len, int8_t rssi, uint8_t channel, uint64_t ts_usec, uint8_t* buffer, size_t max_len) {
+    uint16_t freq = 0;
+    uint16_t chan_flags = 0;
+    if (channel <= 14) {
+        freq = 2407 + (channel * 5);
+        if (channel == 14) freq = 2484;
+        chan_flags = 0x00A0; // 2GHz + Dynamic CCK/OFDM
+    } else {
+        freq = 5000 + (channel * 5);
+        chan_flags = 0x0140; // 5GHz + OFDM
+    }
+
+    uint8_t radiotap[14] = {
+        0x00, 0x00,         // Version 0, Pad 0
+        0x0E, 0x00,         // Header length 14
+        0x28, 0x00, 0x00, 0x00, // Present mask: Channel + RSSI
+        (uint8_t)(freq & 0xFF), (uint8_t)(freq >> 8),
+        (uint8_t)(chan_flags & 0xFF), (uint8_t)(chan_flags >> 8),
+        (uint8_t)rssi,
+        0x00                // Pad
+    };
+
+    uint32_t rt_len = 14;
+    uint32_t cap_len = (uint32_t)payload_len + rt_len;
+    uint32_t pkt_len = (uint32_t)payload_len + rt_len;
+    uint32_t aligned_pkt_len = (cap_len + 3) & ~3;
+    uint32_t pkt_padding = aligned_pkt_len - cap_len;
+
+    // Options: RSSI (8), Channel (8), End (4) = 20 bytes
+    uint32_t opt_len = 20; 
+    uint32_t block_len = 32 + aligned_pkt_len + opt_len;
 
     if (block_len > max_len) return 0;
 
@@ -104,14 +154,35 @@ size_t writePcapngPacket(const uint8_t* payload, size_t payload_len, int8_t rssi
     memcpy(buffer + offset, &cap_len, 4); offset += 4;
     memcpy(buffer + offset, &pkt_len, 4); offset += 4;
 
-    memcpy(buffer + offset, radiotap, 8); offset += 8;
+    memcpy(buffer + offset, radiotap, rt_len); offset += rt_len;
     memcpy(buffer + offset, payload, payload_len); offset += payload_len;
     
-    if (padding > 0) {
-        uint32_t zero = 0;
-        memcpy(buffer + offset, &zero, padding); offset += padding;
+    if (pkt_padding > 0) {
+        memset(buffer + offset, 0, pkt_padding); offset += pkt_padding;
     }
+
+    // Option TLVs
+    uint16_t opt_code; uint16_t opt_vlen;
     
+    // RSSI (0x8001)
+    opt_code = 0x8001; opt_vlen = 1;
+    memcpy(buffer + offset, &opt_code, 2); offset += 2;
+    memcpy(buffer + offset, &opt_vlen, 2); offset += 2;
+    buffer[offset++] = (uint8_t)rssi;
+    memset(buffer + offset, 0, 3); offset += 3;
+
+    // Channel (0x8002)
+    opt_code = 0x8002; opt_vlen = 1;
+    memcpy(buffer + offset, &opt_code, 2); offset += 2;
+    memcpy(buffer + offset, &opt_vlen, 2); offset += 2;
+    buffer[offset++] = channel;
+    memset(buffer + offset, 0, 3); offset += 3;
+
+    // End of Options
+    opt_code = 0x0000; opt_vlen = 0;
+    memcpy(buffer + offset, &opt_code, 2); offset += 2;
+    memcpy(buffer + offset, &opt_vlen, 2); offset += 2;
+
     memcpy(buffer + offset, &block_len, 4); offset += 4;
     
     return offset;
@@ -140,7 +211,7 @@ size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max
         memcpy(pkt + p, rec.ssid, rec.ssid_len); p += rec.ssid_len;
         pkt[p++] = 0x03; pkt[p++] = 0x01; pkt[p++] = rec.channel; // Channel Tag
         
-        size_t w = writePcapngPacket(pkt, p, -50, ts++, buffer + offset, max_len - offset);
+        size_t w = writePcapngPacket(pkt, p, rec.rssi, rec.channel, ts++, buffer + offset, max_len - offset);
         if (w == 0) return offset;
         offset += w;
     }
@@ -180,14 +251,39 @@ size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max
         pkt[p++] = 0xDD; pkt[p++] = 0x14; pkt[p++] = 0x00; pkt[p++] = 0x0F; pkt[p++] = 0xAC; pkt[p++] = 0x04;
         memcpy(pkt + p, rec.pmkid, 16); p += 16;
         
-        size_t w = writePcapngPacket(pkt, p, -50, ts++, buffer + offset, max_len - offset);
+        size_t w = writePcapngPacket(pkt, p, rec.rssi, rec.channel, ts++, buffer + offset, max_len - offset);
+        if (w == 0) return offset;
+        offset += w;
+
+    } else if (rec.type == CAP_SAE) {
+        // Packet 2: SAE Authentication (Commit or Confirm)
+        size_t p = 0;
+        // MAC Header: Type Mgmt / Subtype Auth (0xB0)
+        pkt[p++] = 0xB0; pkt[p++] = 0x00; pkt[p++] = 0x00; pkt[p++] = 0x00; 
+        memcpy(pkt + p, rec.bssid, 6); p += 6;   // DA (APs BSSID)
+        memcpy(pkt + p, rec.sta, 6); p += 6;     // SA (Client MAC)
+        memcpy(pkt + p, rec.bssid, 6); p += 6;   // BSSID
+        pkt[p++] = 0x00; pkt[p++] = 0x00; // Seq
+
+        // SAE Fixed Header (6 bytes)
+        pkt[p++] = 0x03; pkt[p++] = 0x00; // Algorithm: SAE (3)
+        pkt[p++] = rec.sae_seq; pkt[p++] = 0x00; // Sequence
+        pkt[p++] = 0x00; pkt[p++] = 0x00; // Status: Success (0)
+        
+        // SAE Body
+        if (rec.sae_len > 0) {
+            memcpy(pkt + p, rec.sae_data, rec.sae_len);
+            p += rec.sae_len;
+        }
+        
+        size_t w = writePcapngPacket(pkt, p, rec.rssi, rec.channel, ts++, buffer + offset, max_len - offset);
         if (w == 0) return offset;
         offset += w;
 
     } else {
-        // CAP_EAPOL/EAPOL_CSA
+        // CAP_EAPOL / EAPOL_CSA / EAPOL_HALF
         // Packet 2: EAPOL M1 (AP -> STA)
-        {
+        if (rec.has_anonce) {
             size_t p = 0;
             pkt[p++] = 0x08; pkt[p++] = 0x02; pkt[p++] = 0x00; pkt[p++] = 0x00; // Data / QoS Data, FromDS=1
             memcpy(pkt + p, rec.sta, 6); p += 6;     // DA
@@ -211,13 +307,13 @@ size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max
 
             memcpy(pkt + p, eapolPayload, 95); p += 95;
             
-            size_t w = writePcapngPacket(pkt, p, -50, ts++, buffer + offset, max_len - offset);
+            size_t w = writePcapngPacket(pkt, p, rec.rssi, rec.channel, ts++, buffer + offset, max_len - offset);
             if (w == 0) return offset;
             offset += w;
         }
 
         // Packet 3: EAPOL M2 (STA -> AP)
-        {
+        if (rec.eapol_m2_len > 0) {
             size_t p = 0;
             pkt[p++] = 0x08; pkt[p++] = 0x01; pkt[p++] = 0x00; pkt[p++] = 0x00; // Data / QoS Data, ToDS=1
             memcpy(pkt + p, rec.bssid, 6); p += 6;   // DA
@@ -229,13 +325,49 @@ size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max
             uint8_t snap[8] = { 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E };
             memcpy(pkt + p, snap, 8); p += 8;
 
-            uint16_t eapol_len = rec.eapol_m2_len > 4 ? rec.eapol_m2_len - 4 : 0;
-            if (eapol_len > 0) {
-                // EAPOL Version + Type usually part of m2
-                memcpy(pkt + p, rec.eapol_m2, rec.eapol_m2_len); p += rec.eapol_m2_len;
-            }
+            memcpy(pkt + p, rec.eapol_m2, rec.eapol_m2_len); p += rec.eapol_m2_len;
             
-            size_t w = writePcapngPacket(pkt, p, -50, ts++, buffer + offset, max_len - offset);
+            size_t w = writePcapngPacket(pkt, p, rec.rssi, rec.channel, ts++, buffer + offset, max_len - offset);
+            if (w == 0) return offset;
+            offset += w;
+        }
+
+        // Packet 4: EAPOL M3 (AP -> STA)
+        if (rec.has_m3) {
+            size_t p = 0;
+            pkt[p++] = 0x08; pkt[p++] = 0x02; pkt[p++] = 0x00; pkt[p++] = 0x00; // FromDS=1
+            memcpy(pkt + p, rec.sta, 6); p += 6;
+            memcpy(pkt + p, rec.bssid, 6); p += 6;
+            memcpy(pkt + p, rec.bssid, 6); p += 6;
+            pkt[p++] = 0x00; pkt[p++] = 0x00;
+            pkt[p++] = 0x00; pkt[p++] = 0x00;
+
+            uint8_t snap[8] = { 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E };
+            memcpy(pkt + p, snap, 8); p += 8;
+
+            memcpy(pkt + p, rec.eapol_m3, rec.eapol_m3_len); p += rec.eapol_m3_len;
+            
+            size_t w = writePcapngPacket(pkt, p, rec.rssi, rec.channel, ts++, buffer + offset, max_len - offset);
+            if (w == 0) return offset;
+            offset += w;
+        }
+
+        // Packet 5: EAPOL M4 (STA -> AP)
+        if (rec.has_m4) {
+            size_t p = 0;
+            pkt[p++] = 0x08; pkt[p++] = 0x01; pkt[p++] = 0x00; pkt[p++] = 0x00; // ToDS=1
+            memcpy(pkt + p, rec.bssid, 6); p += 6;
+            memcpy(pkt + p, rec.sta, 6); p += 6;
+            memcpy(pkt + p, rec.bssid, 6); p += 6;
+            pkt[p++] = 0x00; pkt[p++] = 0x00;
+            pkt[p++] = 0x00; pkt[p++] = 0x00;
+
+            uint8_t snap[8] = { 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E };
+            memcpy(pkt + p, snap, 8); p += 8;
+
+            memcpy(pkt + p, rec.eapol_m4, rec.eapol_m4_len); p += rec.eapol_m4_len;
+            
+            size_t w = writePcapngPacket(pkt, p, rec.rssi, rec.channel, ts++, buffer + offset, max_len - offset);
             if (w == 0) return offset;
             offset += w;
         }

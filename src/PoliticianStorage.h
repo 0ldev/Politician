@@ -65,10 +65,11 @@ public:
      * @param payload Raw packet data
      * @param len Packet length
      * @param rssi Signal strength
+     * @param channel WiFi channel
      * @param ts_usec Hardware microsecond timestamp
      * @return true if successful, false otherwise
      */
-    static bool appendPacket(fs::FS &fs, const char* path, const uint8_t* payload, uint16_t len, int8_t rssi, uint32_t ts_usec) {
+    static bool appendPacket(fs::FS &fs, const char* path, const uint8_t* payload, uint16_t len, int8_t rssi, uint8_t channel, uint32_t ts_usec) {
         bool isNew = !fs.exists(path);
         if (!isNew) {
             fs::File check = fs.open(path, FILE_READ);
@@ -88,7 +89,7 @@ public:
         }
 
         uint8_t buf[2500]; // Max 802.11 frame is 2346 bytes
-        size_t wlen = format::writePcapngPacket(payload, len, rssi, ts_usec, buf, sizeof(buf));
+        size_t wlen = format::writePcapngPacket(payload, len, rssi, channel, ts_usec, buf, sizeof(buf));
         if (wlen > 0) {
             file.write(buf, wlen);
             file.flush();

@@ -2,6 +2,10 @@
 #include "politician_compat.h"
 #include <esp_wifi.h>
 #include <esp_wifi_types.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/ringbuf.h>
+#include <freertos/semphr.h>
 #include "PoliticianTypes.h"
 
 namespace politician {
@@ -53,7 +57,7 @@ typedef struct {
 #define MGMT_SUB_PROBE_REQ  0x40
 #define MGMT_SUB_PROBE_RESP 0x50
 #define MGMT_SUB_BEACON     0x80
-#define MGMT_SUB_AUTH_RESP  0xB0
+#define MGMT_SUB_AUTH       0xB0
 #define MGMT_SUB_DISASSOC   0xA0
 #define MGMT_SUB_DEAUTH     0xC0
 
@@ -279,7 +283,7 @@ public:
     using EapolCb          = void (*)(const HandshakeRecord &rec);
     using ApFoundCb        = void (*)(const ApRecord &ap);
     using TargetFilterCb   = bool (*)(const ApRecord &ap);
-    using PacketCb         = void (*)(const uint8_t *payload, uint16_t len, int8_t rssi, uint32_t ts_usec);
+    using PacketCb         = void (*)(const uint8_t *payload, uint16_t len, int8_t rssi, uint8_t channel, uint32_t ts_usec);
     using IdentityCb       = void (*)(const EapIdentityRecord &rec);
     using AttackResultCb   = void (*)(const AttackResultRecord &rec);
     using ProbeRequestCb   = void (*)(const ProbeRequestRecord &rec);
@@ -343,7 +347,12 @@ public:
 
 private:
     static void IRAM_ATTR _promiscuousCb(void *buf, wifi_promiscuous_pkt_type_t type);
+    static void _workerTask(void *pvParameters);
     static Politician *_instance;
+
+    RingbufHandle_t _rb = nullptr;
+    TaskHandle_t    _task = nullptr;
+    SemaphoreHandle_t _lock = nullptr;
 
     void _handleFrame(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuous_pkt_type_t type);
     void _handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload, uint16_t len, int8_t rssi);
@@ -489,12 +498,19 @@ private:
         uint8_t      channel;
         int8_t       rssi;
         uint8_t      anonce[32];
+        uint8_t      snonce[32];
         uint8_t      m1_replay_counter[8];
         uint8_t      mic[16];
         uint8_t      eapol_m2[256];
         uint16_t     eapol_m2_len;
+        uint8_t      eapol_m3[256];
+        uint16_t     eapol_m3_len;
+        uint8_t      eapol_m4[256];
+        uint16_t     eapol_m4_len;
         bool         has_m1;
         bool         has_m2;
+        bool         has_m3;
+        bool         has_m4;
         uint32_t     created_ms;
     };
     Session _sessions[MAX_SESSIONS];
