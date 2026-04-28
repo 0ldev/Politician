@@ -201,6 +201,12 @@ public:
     void    clearAttackMaskOverrides();
 
     /**
+     * @brief Configures how the engine handles disconnection when both CSA and Deauth are enabled.
+     * @param strategy STRATEGY_AUTO_FALLBACK (default) or STRATEGY_SIMULTANEOUS.
+     */
+    void    setDisconnectionStrategy(DisconnectStrategy strategy) { _disconnectStrategy = strategy; }
+
+    /**
      * @brief Focuses the engine on a single BSSID.
      * @return OK on success, ERR_ALREADY_CAPTURED if BSSID is on the captured/ignore list.
      */
@@ -304,6 +310,17 @@ public:
     void setTargetScoreCallback(TargetScoreCb cb) { _targetScoreCb = cb; }
 
     /**
+     * @brief Injects a custom 802.11 frame.
+     * @param payload The raw 802.11 frame bytes.
+     * @param len Length of the frame.
+     * @param channel The 2.4GHz or 5GHz channel to transmit on.
+     * @param lock_ms Optional. If > 0, the engine disables hopping and stays on the channel for this duration.
+     * @param wait_for_channel If true, the frame is queued until the hopper naturally reaches the channel (stealth). If false, the engine immediately switches to the channel and fires.
+     * @return OK on success, or an error code if the queue is full or engine is not initialized.
+     */
+    Error   injectCustomFrame(const uint8_t *payload, size_t len, uint8_t channel, uint32_t lock_ms = 0, bool wait_for_channel = false);
+
+    /**
      * @brief Sets the callback for when a handshake (EAPOL or PMKID) is captured.
      */
     void setEapolCallback(EapolCb cb)     { _eapolCb = cb; }
@@ -389,6 +406,18 @@ private:
     int8_t     _lastRssi;
     uint8_t    _hopIndex;
     uint8_t    _attackMask;
+    DisconnectStrategy _disconnectStrategy;
+    uint32_t   _csaFallbackMs;
+
+    static const int MAX_INJECT_QUEUE = 4;
+    struct InjectFrame {
+        bool     active;
+        uint8_t  payload[256];
+        uint16_t len;
+        uint8_t  channel;
+        uint32_t lock_ms;
+    };
+    InjectFrame _injectQueue[MAX_INJECT_QUEUE];
 
     static const int MAX_ATTACK_OVERRIDES = 8;
     struct AttackOverride { bool active; uint8_t bssid[6]; uint8_t mask; };

