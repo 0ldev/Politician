@@ -82,6 +82,7 @@ struct Config {
     bool     unicast_deauth      = true;  // Send deauth to known client MAC instead of broadcast
     uint32_t probe_hidden_interval_ms = 0;     // How often to probe hidden APs for SSID (0 = disabled, opt-in)
     uint8_t  deauth_reason       = 7;    // 802.11 reason code for deauth frames (7=Class 3 from non-assoc)
+    bool     deauth_reason_cycling = true; // Cycle through effective reason codes during burst (fuzzing)
     bool     capture_group_keys  = false; // Fire eapolCb with CAP_EAPOL_GROUP on GTK rotation frames
     uint8_t  min_beacon_count    = 0;    // Min times AP must be seen before attack/apFoundCb (0 = no minimum)
     uint8_t  max_total_attempts  = 0;    // Permanently skip BSSID after this many failed attacks (0 = unlimited)

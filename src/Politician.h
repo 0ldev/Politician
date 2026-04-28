@@ -496,7 +496,6 @@ private:
         uint8_t  max_rate_mbps;         // Highest rate from Supported Rates IE (Mbps)
     };
     ApCacheEntry _apCache[MAX_AP_CACHE];
-    int          _apCacheCount;
 
     void _cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
                   uint8_t enc, uint8_t channel, int8_t rssi,
