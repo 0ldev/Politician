@@ -469,7 +469,6 @@ private:
 
     static const int MAX_AP_CACHE = POLITICIAN_MAX_AP_CACHE;
     struct ApCacheEntry {
-        bool     active;
         uint8_t  bssid[6];
         char     ssid[33];
         uint8_t  ssid_len;
@@ -481,13 +480,6 @@ private:
         uint32_t last_probe_ms;
         uint32_t last_stimulate_ms;
         uint32_t last_hidden_probe_ms;  // Timestamp of last directed probe for hidden SSID
-        bool     has_active_clients;
-        bool     is_wpa3_only;          // True if PMF is required and no WPA2 AKM offered
-        bool     is_hidden;             // True if SSID is blank
-        bool     wps_enabled;           // WPS IE detected
-        bool     pmf_capable;           // MFPC bit in RSN Capabilities
-        bool     pmf_required;          // MFPR bit in RSN Capabilities
-        bool     ft_capable;            // 802.11r FT AKM present (FT-PSK=4 or FT-EAP=3)
         uint8_t  known_stas[4][6];      // Up to 4 persistently tracked client MACs
         uint8_t  known_sta_count;
         uint16_t beacon_count;          // Times this AP has been observed
@@ -497,6 +489,16 @@ private:
         uint8_t  max_rate_mbps;         // Highest rate from Supported Rates IE (Mbps)
         uint16_t sta_count;             // Connected client count from BSS Load
         uint8_t  chan_util;             // Channel utilization (0-255)
+        struct {
+            uint8_t active             : 1;
+            uint8_t has_active_clients : 1;
+            uint8_t is_wpa3_only       : 1;
+            uint8_t is_hidden          : 1;
+            uint8_t wps_enabled        : 1;
+            uint8_t pmf_capable        : 1;
+            uint8_t pmf_required       : 1;
+            uint8_t ft_capable         : 1;
+        } flags;
     };
     ApCacheEntry _apCache[MAX_AP_CACHE];
 
@@ -535,7 +537,6 @@ private:
 
     static const int MAX_SESSIONS = POLITICIAN_MAX_SESSIONS;
     struct Session {
-        bool         active;
         uint8_t      bssid[6];
         uint8_t      sta[6];
         char         ssid[33];
@@ -546,17 +547,21 @@ private:
         uint8_t      snonce[32];
         uint8_t      m1_replay_counter[8];
         uint8_t      mic[16];
-        uint8_t      eapol_m2[256];
-        uint16_t     eapol_m2_len;
-        uint8_t      eapol_m3[256];
-        uint16_t     eapol_m3_len;
-        uint8_t      eapol_m4[256];
-        uint16_t     eapol_m4_len;
-        bool         has_m1;
-        bool         has_m2;
-        bool         has_m3;
-        bool         has_m4;
         uint32_t     created_ms;
+
+        // Dynamic EAPOL Buffer (M2, M3, M4 packed)
+        uint8_t      eapol_buffer[400];
+        uint16_t     m2_off, m2_len;
+        uint16_t     m3_off, m3_len;
+        uint16_t     m4_off, m4_len;
+
+        struct {
+            uint8_t active : 1;
+            uint8_t has_m1 : 1;
+            uint8_t has_m2 : 1;
+            uint8_t has_m3 : 1;
+            uint8_t has_m4 : 1;
+        } flags;
     };
     Session _sessions[MAX_SESSIONS];
 
