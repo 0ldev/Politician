@@ -495,6 +495,8 @@ private:
         char     country[3];            // IE 7 country code (e.g. "US"), empty if absent
         uint16_t beacon_interval;       // Beacon interval in TUs from fixed fields
         uint8_t  max_rate_mbps;         // Highest rate from Supported Rates IE (Mbps)
+        uint16_t sta_count;             // Connected client count from BSS Load
+        uint8_t  chan_util;             // Channel utilization (0-255)
     };
     ApCacheEntry _apCache[MAX_AP_CACHE];
 
@@ -502,7 +504,7 @@ private:
                   uint8_t enc, uint8_t channel, int8_t rssi,
                   bool is_wpa3_only = false, bool wps = false,
                   bool pmf_capable = false, bool pmf_required = false,
-                  bool ft_capable = false);
+                  bool ft_capable = false, uint16_t sta_count = 0, uint8_t chan_util = 0);
     bool _lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len);
     bool _lookupEnc(const uint8_t *bssid, uint8_t &out_enc);
 

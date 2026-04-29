@@ -546,6 +546,8 @@ void Politician::tick() {
                 ap_rec.beacon_interval = _apCache[i].beacon_interval;
                 ap_rec.max_rate_mbps   = _apCache[i].max_rate_mbps;
                 ap_rec.is_hidden       = _apCache[i].is_hidden;
+                ap_rec.sta_count       = _apCache[i].sta_count;
+                ap_rec.chan_util       = _apCache[i].chan_util;
                 
                 score = _targetScoreCb(ap_rec, getVendor(ap_rec.bssid));
             }
@@ -836,10 +838,30 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         if (ap.enc >= 3) _detectPmfFlags(ie, ie_len, pmf_capable, pmf_required);
         ap.pmf_capable  = pmf_capable;
         ap.pmf_required = pmf_required;
-        bool ft_capable = (ap.enc >= 3) && _detectFt(ie, ie_len);
-        ap.ft_capable   = ft_capable;
+        uint8_t ft_capable   = (ap.enc >= 3) && _detectFt(ie, ie_len);
+        ap.ft_capable        = ft_capable;
+
+        // BSS Load IE (Tag 11)
+        uint16_t sta_count = 0;
+        uint8_t  chan_util = 0;
+        {
+            uint16_t pos = 0;
+            while (pos + 2 <= ie_len) {
+                uint8_t tag  = ie[pos];
+                uint8_t tlen = ie[pos + 1];
+                if (pos + 2 + tlen > ie_len) break;
+                if (tag == 11 && tlen >= 5) {
+                    sta_count = ((uint16_t)ie[pos + 2]) | ((uint16_t)ie[pos + 3] << 8);
+                    chan_util = ie[pos + 4];
+                    break;
+                }
+                pos += 2 + tlen;
+            }
+        }
+
         _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch, rssi,
-                 is_wpa3_only, ap.wps_enabled, pmf_capable, pmf_required, ft_capable);
+                 is_wpa3_only, ap.wps_enabled, pmf_capable, pmf_required, ft_capable,
+                 sta_count, chan_util);
 
         // Parse beacon interval (fixed field bytes 8-9) and max legacy data rate
         {
@@ -886,6 +908,9 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 pos += 2 + tlen;
             }
         }
+
+        ap.sta_count = sta_count;
+        ap.chan_util = chan_util;
 
         // Fire apFoundCb only once min_beacon_count is satisfied
         if (_apFoundCb) {
@@ -1600,7 +1625,7 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
                            uint8_t enc, uint8_t channel, int8_t rssi,
                            bool is_wpa3_only, bool wps,
                            bool pmf_capable, bool pmf_required,
-                           bool ft_capable) {
+                           bool ft_capable, uint16_t sta_count, uint8_t chan_util) {
     if (ssid_len > 32) ssid_len = 32; // defensive clamp — _parseSsid already enforces this
     // enc_filter_mask: skip uncacheable encryption types (hidden APs bypass — SSID unknown yet)
     if (ssid_len > 0 && !(_cfg.enc_filter_mask & (1 << enc))) return;
@@ -1626,6 +1651,9 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
             _apCache[i].pmf_required  = pmf_required;
             _apCache[i].ft_capable    = ft_capable;
             _apCache[i].last_seen_ms = now;
+            _apCache[i].sta_count     = sta_count;
+            _apCache[i].chan_util     = chan_util;
+            if (sta_count > 0) _apCache[i].has_active_clients = true;
             if (ssid_len > 0) _apCache[i].is_hidden = false;
             if (_apCache[i].beacon_count < 0xFFFF) _apCache[i].beacon_count++;
             return;
@@ -1657,6 +1685,9 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
     _apCache[slot].pmf_capable   = pmf_capable;
     _apCache[slot].pmf_required  = pmf_required;
     _apCache[slot].ft_capable    = ft_capable;
+    _apCache[slot].sta_count     = sta_count;
+    _apCache[slot].chan_util     = chan_util;
+    _apCache[slot].has_active_clients = (sta_count > 0);
     memcpy(_apCache[slot].bssid, bssid, 6); memcpy(_apCache[slot].ssid, ssid, ssid_len + 1);
     _apCache[slot].ssid_len = ssid_len; _apCache[slot].enc = enc; _apCache[slot].channel = channel;
     _apCache[slot].rssi = rssi; _apCache[slot].is_wpa3_only = is_wpa3_only;
@@ -1724,6 +1755,8 @@ bool Politician::getAp(int idx, ApRecord &out) const {
             out.beacon_interval = _apCache[i].beacon_interval;
             out.max_rate_mbps   = _apCache[i].max_rate_mbps;
             out.is_hidden       = _apCache[i].is_hidden;
+            out.sta_count       = _apCache[i].sta_count;
+            out.chan_util       = _apCache[i].chan_util;
             ok = true; break;
         }
         found++;
@@ -1755,6 +1788,8 @@ bool Politician::getApByBssid(const uint8_t *bssid, ApRecord &out) const {
         out.beacon_interval = _apCache[i].beacon_interval;
         out.max_rate_mbps   = _apCache[i].max_rate_mbps;
         out.is_hidden       = _apCache[i].is_hidden;
+        out.sta_count       = _apCache[i].sta_count;
+        out.chan_util       = _apCache[i].chan_util;
         ok = true; break;
     }
     xSemaphoreGiveRecursive(_lock);

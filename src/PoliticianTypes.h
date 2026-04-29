@@ -117,6 +117,8 @@ struct ApRecord {
     uint16_t beacon_interval;  // Advertised beacon interval in TUs (1 TU = 1024 µs), 0 if unknown
     uint8_t  max_rate_mbps;    // Highest legacy data rate from Supported Rates IEs (Mbps), 0 if unknown
     bool     is_hidden;        // True if AP broadcasts an empty SSID (hidden network)
+    uint16_t sta_count;        // Connected client count from BSS Load IE (if present)
+    uint8_t  chan_util;        // Channel utilization from BSS Load IE (0-255)
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────
