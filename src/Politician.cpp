@@ -625,10 +625,7 @@ void IRAM_ATTR Politician::_promiscuousCb(void *buf, wifi_promiscuous_pkt_type_t
     const wifi_promiscuous_pkt_t *pkt = (const wifi_promiscuous_pkt_t *)buf;
     uint16_t total_len = sizeof(wifi_pkt_rx_ctrl_t) + pkt->rx_ctrl.sig_len;
 
-    // We pack the type into the first byte of a small wrapper or just handle it.
-    // To keep it simple, we'll send the raw wifi_promiscuous_pkt_t data.
-    // The sig_len tells us how much payload follows the rx_ctrl.
-    
+    // Send raw packet data to ringbuffer for async processing
     if (xRingbufferSendFromISR(_instance->_rb, buf, total_len, NULL) != pdTRUE) {
         _instance->_stats.dropped++;
     }
@@ -640,15 +637,7 @@ void Politician::_workerTask(void *pvParameters) {
         size_t size = 0;
         wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)xRingbufferReceive(self->_rb, &size, portMAX_DELAY);
         if (pkt) {
-            // We don't have the 'type' (MGMT/DATA/CTRL) from the callback anymore 
-            // if we only send the buffer. However, 802.11 headers have the type.
-            // But the ESP-IDF callback 'type' is useful for filtering.
-            // Optimization: We could pack the type into the buffer, but for now
-            // we will infer it from the frame control or assume MGMT/DATA 
-            // as those are the only ones we filtered for in begin().
-            
-            // Re-infer type or just pass a generic type that _handleFrame can handle
-            // Since we only filter for MGMT and DATA in begin():
+            // Infer frame type from 802.11 Frame Control field
             uint16_t fc = pkt->payload[0] | (pkt->payload[1] << 8);
             wifi_promiscuous_pkt_type_t type = WIFI_PKT_MGMT;
             if ((fc & 0x0C) == 0x08) type = WIFI_PKT_DATA;

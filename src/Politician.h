@@ -398,7 +398,7 @@ private:
     bool _detectFt(const uint8_t *ie, uint16_t ie_len);
 
     bool       _initialized = false;
-    bool       _active;
+    volatile bool _active;
     uint8_t    _channel;
     uint8_t    _rxChannel;
     bool       _hopping;
