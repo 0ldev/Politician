@@ -2,11 +2,7 @@
 #include <string.h>
 #include <esp_log.h>
 
-#ifndef POLITICIAN_FP_DB
-#define POLITICIAN_FP_DB 1
-#endif
-
-#if POLITICIAN_FP_DB > 0
+#ifndef POLITICIAN_NO_DB
 #include "PoliticianFingerprintDB.h"
 #endif
 
@@ -74,6 +70,7 @@ Politician::Politician()
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 void Politician::_log(const char *fmt, ...) {
+#ifndef POLITICIAN_NO_LOGGING
     char buf[256];
     va_list args;
     va_start(args, fmt);
@@ -85,6 +82,7 @@ void Politician::_log(const char *fmt, ...) {
     } else {
         printf("%s", buf);
     }
+#endif
 }
 
 // ─── begin() ─────────────────────────────────────────────────────────────────
@@ -137,7 +135,7 @@ Error Politician::begin(const Config &cfg) {
     }
 
     if (!_task) {
-        xTaskCreatePinnedToCore(_workerTask, "pol_worker", 4096, this, 5, &_task, 1);
+        xTaskCreatePinnedToCore(_workerTask, "pol_worker", 4096, this, 5, &_task, 0);
         if (!_task) return ERR_WIFI_INIT;
     }
 
@@ -830,9 +828,12 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         uint8_t ft_capable   = (ap.enc >= 3) && _detectFt(ie, ie_len);
         ap.ft_capable        = ft_capable;
 
-        // BSS Load IE (Tag 11)
+        // BSS Load IE (Tag 11) and Interworking IE (Tag 107)
         uint16_t sta_count = 0;
         uint8_t  chan_util = 0;
+        uint8_t  venue_group = 0;
+        uint8_t  venue_type = 0;
+        uint8_t  network_type = 0;
         {
             uint16_t pos = 0;
             while (pos + 2 <= ie_len) {
@@ -842,18 +843,28 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 if (tag == 11 && tlen >= 5) {
                     sta_count = ((uint16_t)ie[pos + 2]) | ((uint16_t)ie[pos + 3] << 8);
                     chan_util = ie[pos + 4];
-                    break;
+                } else if (tag == 107 && tlen >= 1) {
+                    network_type = ie[pos + 2] & 0x0F;
+                    if (tlen >= 3) {
+                        venue_group = ie[pos + 3];
+                        venue_type  = ie[pos + 4];
+                    }
                 }
                 pos += 2 + tlen;
             }
         }
 
-        _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch, rssi,
+        ap.venue_group = venue_group;
+        ap.venue_type = venue_type;
+        ap.network_type = network_type;
+        ap.captured = _isCaptured(ap.bssid);
+
+        ApCacheEntry* entry = _cacheAp(ap.bssid, ap.ssid, ap.ssid_len, ap.enc, beacon_ch, rssi,
                  is_wpa3_only, ap.wps_enabled, pmf_capable, pmf_required, ft_capable,
-                 sta_count, chan_util);
+                 sta_count, chan_util, venue_group, venue_type, network_type);
 
         // Parse beacon interval (fixed field bytes 8-9) and max legacy data rate
-        {
+        if (entry) {
             uint16_t bint = (len >= 10) ? (((uint16_t)payload[8]) | ((uint16_t)payload[9] << 8)) : 0;
             uint8_t  maxr = 0;
             uint16_t pos  = 0;
@@ -868,62 +879,40 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 }
                 pos += 2 + tlen;
             }
-            for (int ci = 0; ci < MAX_AP_CACHE; ci++) {
-                if (_apCache[ci].flags.active && memcmp(_apCache[ci].bssid, ap.bssid, 6) == 0) {
-                    if (bint > 0) _apCache[ci].beacon_interval = bint;
-                    if (maxr > 0) _apCache[ci].max_rate_mbps   = maxr / 2; // convert to Mbps
-                    break;
-                }
-            }
+            if (bint > 0) entry->beacon_interval = bint;
+            if (maxr > 0) entry->max_rate_mbps   = maxr / 2; // convert to Mbps
         }
 
         // Parse IE 7 (Country) and store in cache
-        {
+        if (entry) {
             uint16_t pos = 0;
             while (pos + 2 <= ie_len) {
                 uint8_t tag = ie[pos], tlen = ie[pos + 1];
                 if (pos + 2 + tlen > ie_len) break;
                 if (tag == 7 && tlen >= 2) {
-                    for (int ci = 0; ci < MAX_AP_CACHE; ci++) {
-                        if (_apCache[ci].flags.active && memcmp(_apCache[ci].bssid, ap.bssid, 6) == 0) {
-                            _apCache[ci].country[0] = ie[pos + 2];
-                            _apCache[ci].country[1] = ie[pos + 3];
-                            _apCache[ci].country[2] = '\0';
-                            break;
-                        }
-                    }
+                    entry->country[0] = ie[pos + 2];
+                    entry->country[1] = ie[pos + 3];
+                    entry->country[2] = '\0';
                     break;
                 }
                 pos += 2 + tlen;
             }
         }
 
-        ap.sta_count = sta_count;
-        ap.chan_util = chan_util;
-
         // Fire apFoundCb only once min_beacon_count is satisfied
         if (_apFoundCb) {
             bool threshold_ok = true;
-            if (_cfg.min_beacon_count > 0) {
-                for (int i = 0; i < MAX_AP_CACHE; i++) {
-                    if (_apCache[i].flags.active && memcmp(_apCache[i].bssid, ap.bssid, 6) == 0) {
-                        threshold_ok = (_apCache[i].beacon_count >= _cfg.min_beacon_count);
-                        break;
-                    }
-                }
+            if (_cfg.min_beacon_count > 0 && entry) {
+                threshold_ok = (entry->beacon_count >= _cfg.min_beacon_count);
             }
             if (threshold_ok) _apFoundCb(ap);
         }
 
-        // Hidden SSID active probing
+        // Execute active probing for hidden networks
         if (ap.ssid_len == 0 && _cfg.probe_hidden_interval_ms > 0) {
-            for (int i = 0; i < MAX_AP_CACHE; i++) {
-                if (!_apCache[i].flags.active || memcmp(_apCache[i].bssid, ap.bssid, 6) != 0) continue;
-                if (millis() - _apCache[i].last_hidden_probe_ms >= _cfg.probe_hidden_interval_ms) {
-                    _apCache[i].last_hidden_probe_ms = millis();
-                    _sendProbeRequest(ap.bssid);
-                }
-                break;
+            if (entry && (millis() - entry->last_hidden_probe_ms >= _cfg.probe_hidden_interval_ms)) {
+                entry->last_hidden_probe_ms = millis();
+                _sendProbeRequest(ap.bssid);
             }
         }
 
@@ -1363,7 +1352,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
             
             // Session remains ACTIVE to potentially catch M3 and M4
         } else if (is_new_m2 && _cfg.capture_half_handshakes) {
-            // M2 seen without a prior M1 — fire half-handshake callback then pivot to flags.active attack
+            // M2 seen without a prior M1 — fire half-handshake callback then pivot to active attack
             HandshakeRecord rec; memset(&rec, 0, sizeof(rec));
             rec.type = CAP_EAPOL_HALF;
             rec.channel = sess->channel; rec.rssi = sess->rssi;
@@ -1621,21 +1610,22 @@ Politician::Session* Politician::_createSession(const uint8_t *bssid, const uint
     return &_sessions[evict];
 }
 
-void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
+Politician::ApCacheEntry* Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
                            uint8_t enc, uint8_t channel, int8_t rssi,
                            bool is_wpa3_only, bool wps,
                            bool pmf_capable, bool pmf_required,
-                           bool ft_capable, uint16_t sta_count, uint8_t chan_util) {
+                           bool ft_capable, uint16_t sta_count, uint8_t chan_util,
+                           uint8_t venue_group, uint8_t venue_type, uint8_t network_type) {
     if (ssid_len > 32) ssid_len = 32; // defensive clamp — _parseSsid already enforces this
     // enc_filter_mask: skip uncacheable encryption types (hidden APs bypass — SSID unknown yet)
-    if (ssid_len > 0 && !(_cfg.enc_filter_mask & (1 << enc))) return;
+    if (ssid_len > 0 && !(_cfg.enc_filter_mask & (1 << enc))) return nullptr;
 
     // ssid_filter: skip APs that don't match the SSID filter (hidden APs bypass — SSID unknown yet)
     if (ssid_len > 0 && _cfg.ssid_filter[0] != '\0') {
         if (_cfg.ssid_filter_exact) {
-            if (ssid_len != strlen(_cfg.ssid_filter) || memcmp(ssid, _cfg.ssid_filter, ssid_len) != 0) return;
+            if (ssid_len != strlen(_cfg.ssid_filter) || memcmp(ssid, _cfg.ssid_filter, ssid_len) != 0) return nullptr;
         } else {
-            if (strstr(ssid, _cfg.ssid_filter) == nullptr) return;
+            if (strstr(ssid, _cfg.ssid_filter) == nullptr) return nullptr;
         }
     }
 
@@ -1653,10 +1643,13 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
             _apCache[i].last_seen_ms = now;
             _apCache[i].sta_count     = sta_count;
             _apCache[i].chan_util     = chan_util;
+            _apCache[i].venue_group   = venue_group;
+            _apCache[i].venue_type    = venue_type;
+            _apCache[i].network_type  = network_type;
             if (sta_count > 0) _apCache[i].flags.has_active_clients = true;
             if (ssid_len > 0) _apCache[i].flags.is_hidden = false;
             if (_apCache[i].beacon_count < 0xFFFF) _apCache[i].beacon_count++;
-            return;
+            return &_apCache[i];
         }
     }
     
@@ -1687,6 +1680,9 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
     _apCache[slot].flags.ft_capable    = ft_capable;
     _apCache[slot].sta_count     = sta_count;
     _apCache[slot].chan_util     = chan_util;
+    _apCache[slot].venue_group   = venue_group;
+    _apCache[slot].venue_type    = venue_type;
+    _apCache[slot].network_type  = network_type;
     _apCache[slot].flags.has_active_clients = (sta_count > 0);
     memcpy(_apCache[slot].bssid, bssid, 6); memcpy(_apCache[slot].ssid, ssid, ssid_len + 1);
     _apCache[slot].ssid_len = ssid_len; _apCache[slot].enc = enc; _apCache[slot].channel = channel;
@@ -1711,6 +1707,7 @@ void Politician::_cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_l
             break;
         }
     }
+    return &_apCache[slot];
 }
 
 bool Politician::_lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len) {
@@ -1757,6 +1754,9 @@ bool Politician::getAp(int idx, ApRecord &out) const {
             out.is_hidden       = _apCache[i].flags.is_hidden;
             out.sta_count       = _apCache[i].sta_count;
             out.chan_util       = _apCache[i].chan_util;
+            out.venue_group     = _apCache[i].venue_group;
+            out.venue_type      = _apCache[i].venue_type;
+            out.network_type    = _apCache[i].network_type;
             ok = true; break;
         }
         found++;
@@ -1790,6 +1790,9 @@ bool Politician::getApByBssid(const uint8_t *bssid, ApRecord &out) const {
         out.is_hidden       = _apCache[i].flags.is_hidden;
         out.sta_count       = _apCache[i].sta_count;
         out.chan_util       = _apCache[i].chan_util;
+        out.venue_group     = _apCache[i].venue_group;
+        out.venue_type      = _apCache[i].venue_type;
+        out.network_type    = _apCache[i].network_type;
         ok = true; break;
     }
     xSemaphoreGiveRecursive(_lock);
@@ -1904,7 +1907,7 @@ void Politician::_expireSessions(uint32_t timeoutMs) {
 }
 
 const char* Politician::getVendor(const uint8_t *mac) {
-#if POLITICIAN_FP_DB > 0
+#ifndef POLITICIAN_NO_DB
     int left = 0, right = fingerprint::_FP_OUI_DB_COUNT - 1;
     while (left <= right) {
         int mid = left + (right - left) / 2;

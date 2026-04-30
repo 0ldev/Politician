@@ -4,6 +4,13 @@
 
 namespace politician {
 
+// ─── Compile-Time Feature Gates ──────────────────────────────────────────────
+// Define these before including Politician.h or via build flags (e.g. -DNAME)
+// #define POLITICIAN_NO_DB       // Strip 14KB OUI Database (Vendor lookups)
+// #define POLITICIAN_NO_PCAPNG   // Strip PCAPNG serialization logic
+// #define POLITICIAN_NO_HC22000  // Strip Hashcat mode 22000 formatter
+// #define POLITICIAN_NO_LOGGING  // Strip all internal Serial _log() output
+
 // ─── Capture Types ────────────────────────────────────────────────────────────
 #define CAP_PMKID           0x01  // PMKID fishing (fake association)
 #define CAP_EAPOL           0x02  // Passive EAPOL (natural client reconnection)
@@ -119,6 +126,9 @@ struct ApRecord {
     bool     is_hidden;        // True if AP broadcasts an empty SSID (hidden network)
     uint16_t sta_count;        // Connected client count from BSS Load IE (if present)
     uint8_t  chan_util;        // Channel utilization from BSS Load IE (0-255)
+    uint8_t  venue_group;      // 802.11u Venue Group (e.g., 2=Education, 10=Residential)
+    uint8_t  venue_type;       // 802.11u Venue Type (e.g., 8=University, 1=Coffee Shop)
+    uint8_t  network_type;     // 802.11u Access Network Type (1=Free Public, 2=Chargeable, etc.)
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────

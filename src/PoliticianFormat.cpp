@@ -13,6 +13,7 @@ static void appendHex(std::string& str, const uint8_t* data, size_t len) {
 }
 
 std::string toHC22000(const HandshakeRecord& rec) {
+#ifndef POLITICIAN_NO_HC22000
     if (rec.type == CAP_EAPOL_HALF) return std::string(); // No anonce — not crackable
     
     // Hashcat 22000 Format:
@@ -68,9 +69,14 @@ std::string toHC22000(const HandshakeRecord& rec) {
     }
     
     return out;
+#else
+    (void)rec;
+    return std::string();
+#endif
 }
 
 size_t writePcapngGlobalHeader(uint8_t* buffer) {
+#ifndef POLITICIAN_NO_PCAPNG
     size_t offset = 0;
     
     // 1. Section Header Block (SHB)
@@ -104,9 +110,14 @@ size_t writePcapngGlobalHeader(uint8_t* buffer) {
     memcpy(buffer + offset, &idb_len, 4); offset += 4;
 
     return offset;
+#else
+    (void)buffer;
+    return 0;
+#endif
 }
 
 size_t writePcapngPacket(const uint8_t* payload, size_t payload_len, int8_t rssi, uint8_t channel, uint64_t ts_usec, uint8_t* buffer, size_t max_len) {
+#ifndef POLITICIAN_NO_PCAPNG
     uint16_t freq = 0;
     uint16_t chan_flags = 0;
     if (channel <= 14) {
@@ -186,9 +197,14 @@ size_t writePcapngPacket(const uint8_t* payload, size_t payload_len, int8_t rssi
     memcpy(buffer + offset, &block_len, 4); offset += 4;
     
     return offset;
+#else
+    (void)payload; (void)payload_len; (void)rssi; (void)channel; (void)ts_usec; (void)buffer; (void)max_len;
+    return 0;
+#endif
 }
 
 size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max_len) {
+#ifndef POLITICIAN_NO_PCAPNG
     size_t offset = 0;
     uint8_t pkt[512];
     uint64_t ts = (uint64_t)millis() * 1000;
@@ -374,6 +390,10 @@ size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max
     }
 
     return offset;
+#else
+    (void)rec; (void)buffer; (void)max_len;
+    return 0;
+#endif
 }
 
 } // namespace format

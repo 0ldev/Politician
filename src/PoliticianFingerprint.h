@@ -142,80 +142,103 @@ private:
 
         IeSignals sig = _parseIe(ie, ie_len);
 
-        const DeviceFingerprint *best  = nullptr;
-        uint8_t               bestConf  = 0;
-        uint8_t               bestFlags = 0;
+        const char *bestVendor = nullptr;
+        const char *bestModel  = nullptr;
+        uint8_t bestConf  = 0;
+        uint8_t bestFlags = 0;
 
-        auto scan = [&](const DeviceFingerprint *tbl, size_t cnt) {
-            for (size_t i = 0; i < cnt; i++) {
-                const DeviceFingerprint &f = tbl[i];
-                if (memcmp(f.oui, mac, 3) != 0) continue;
+        auto applyRule = [&](const char* vendor, const char* probeSsid, const char* model, uint8_t baseConf, 
+                             const uint8_t* ht_mask, const uint8_t* ht_info, const uint8_t* rate_sig, 
+                             uint8_t ie_flags_mask, uint8_t ie_flags) {
+            uint8_t conf  = baseConf;
+            uint8_t flags = FP_MATCH_OUI;
 
-                uint8_t conf  = f.confidence;
-                uint8_t flags = FP_MATCH_OUI;
-
-                // Probe SSID prefix match → +20
-                if (f.probeSsid && ssid_len > 0) {
-                    size_t plen = strlen(f.probeSsid);
-                    if ((size_t)ssid_len >= plen && memcmp(ssid, f.probeSsid, plen) == 0) {
-                        conf = (conf + 20u > 100u) ? 100u : conf + 20u;
-                        flags |= FP_MATCH_PROBE_SSID;
-                    }
+            // Probe SSID prefix match → +20
+            if (probeSsid && ssid_len > 0) {
+                size_t plen = strlen(probeSsid);
+                if ((size_t)ssid_len >= plen && memcmp(ssid, probeSsid, plen) == 0) {
+                    conf = (conf + 20u > 100u) ? 100u : conf + 20u;
+                    flags |= FP_MATCH_PROBE_SSID;
                 }
+            }
 
-                // HT Cap Info match → +15
-                if (ie && (f.ht_cap_mask[0] || f.ht_cap_mask[1]) && sig.has_ht) {
-                    if ((sig.ht_cap_info[0] & f.ht_cap_mask[0]) == (f.ht_cap_info[0] & f.ht_cap_mask[0]) &&
-                        (sig.ht_cap_info[1] & f.ht_cap_mask[1]) == (f.ht_cap_info[1] & f.ht_cap_mask[1])) {
-                        conf = (conf + 15u > 100u) ? 100u : conf + 15u;
-                        flags |= FP_MATCH_HT_CAP;
-                    }
+            // HT Cap Info match → +15
+            if (ie && ht_mask && (ht_mask[0] || ht_mask[1]) && sig.has_ht) {
+                if ((sig.ht_cap_info[0] & ht_mask[0]) == (ht_info[0] & ht_mask[0]) &&
+                    (sig.ht_cap_info[1] & ht_mask[1]) == (ht_info[1] & ht_mask[1])) {
+                    conf = (conf + 15u > 100u) ? 100u : conf + 15u;
+                    flags |= FP_MATCH_HT_CAP;
                 }
+            }
 
-                // Supported Rates signature match → +10
-                if (ie && f.rate_sig[0] && sig.has_rates && memcmp(sig.rate_sig, f.rate_sig, 4) == 0) {
-                    conf = (conf + 10u > 100u) ? 100u : conf + 10u;
-                    flags |= FP_MATCH_RATES;
+            // Supported Rates signature match → +10
+            if (ie && rate_sig && rate_sig[0] && sig.has_rates && memcmp(sig.rate_sig, rate_sig, 4) == 0) {
+                conf = (conf + 10u > 100u) ? 100u : conf + 10u;
+                flags |= FP_MATCH_RATES;
+            }
+
+            // IE flags match → +5
+            if (ie && ie_flags_mask) {
+                uint8_t obs = 0;
+                if (!sig.has_ht)      obs |= FP_IEF_NO_HT;
+                if (!sig.has_ext_cap) obs |= FP_IEF_NO_EXT_CAP;
+                if (sig.has_wmm)      obs |= FP_IEF_HAS_WMM;
+                if (sig.has_wps)      obs |= FP_IEF_HAS_WPS;
+                if ((obs & ie_flags_mask) == (ie_flags & ie_flags_mask)) {
+                    conf = (conf + 5u > 100u) ? 100u : conf + 5u;
+                    flags |= FP_MATCH_IE_FLAGS;
                 }
+            }
 
-                // IE flags match → +5
-                if (ie && f.ie_flags_mask) {
-                    uint8_t obs = 0;
-                    if (!sig.has_ht)      obs |= FP_IEF_NO_HT;
-                    if (!sig.has_ext_cap) obs |= FP_IEF_NO_EXT_CAP;
-                    if (sig.has_wmm)      obs |= FP_IEF_HAS_WMM;
-                    if (sig.has_wps)      obs |= FP_IEF_HAS_WPS;
-                    if ((obs & f.ie_flags_mask) == (f.ie_flags & f.ie_flags_mask)) {
-                        conf = (conf + 5u > 100u) ? 100u : conf + 5u;
-                        flags |= FP_MATCH_IE_FLAGS;
-                    }
-                }
-
-                if (conf > bestConf) { bestConf = conf; bestFlags = flags; best = &f; }
+            if (conf > bestConf) { 
+                bestConf = conf; 
+                bestFlags = flags; 
+                bestVendor = vendor;
+                bestModel = model;
             }
         };
 
-#if POLITICIAN_FP_DB > FP_DB_NONE
-        scan(_FP_BUILTIN_DB, _FP_BUILTIN_DB_COUNT);
-#endif
-        scan(_userFps, _userFpCount);
+        auto scanUser = [&](const DeviceFingerprint *tbl, size_t cnt) {
+            for (size_t i = 0; i < cnt; i++) {
+                const DeviceFingerprint &f = tbl[i];
+                if (memcmp(f.oui, mac, 3) != 0) continue;
+                applyRule(f.vendor, f.probeSsid, f.model, f.confidence, f.ht_cap_mask, f.ht_cap_info, f.rate_sig, f.ie_flags_mask, f.ie_flags);
+            }
+        };
 
-        if (!best || bestConf < _minConf) return;
+        scanUser(_userFps, _userFpCount);
 
+        #ifndef POLITICIAN_NO_DB
+        int left = 0, right = _FP_OUI_DB_COUNT - 1;
+        while (left <= right) {
+            int mid = left + (right - left) / 2;
+            int cmp = memcmp(_FP_OUI_DB[mid].oui, mac, 3);
+            if (cmp == 0) {
+                uint8_t v_idx = _FP_OUI_DB[mid].vendor_idx;
+                const BuiltinVendorRule &r = _FP_VENDOR_RULES[v_idx];
+                applyRule(_FP_VENDORS[v_idx], r.probeSsid, r.model, r.confidence, nullptr, nullptr, nullptr, 0, 0);
+                break;
+            }
+            if (cmp < 0) left = mid + 1;
+            else right = mid - 1;
+        }
+        #endif
+
+        if (!bestVendor || bestConf < _minConf) return;
         _markSeen(mac, rssi);
 
         if (!_cb) return;
         DeviceRecord rec;
         memset(&rec, 0, sizeof(rec));
         memcpy(rec.mac, mac, 6);
-        strncpy(rec.vendor, best->vendor ? best->vendor : "", sizeof(rec.vendor) - 1);
-        if (best->model) strncpy(rec.model, best->model, sizeof(rec.model) - 1);
+        strncpy(rec.vendor, bestVendor ? bestVendor : "", sizeof(rec.vendor) - 1);
+        if (bestModel) strncpy(rec.model, bestModel, sizeof(rec.model) - 1);
         rec.channel     = ch;
         rec.rssi        = rssi;
         rec.confidence  = bestConf;
         rec.match_flags = bestFlags;
         _cb(rec);
-    }
+        }
 
     int _findSeen(const uint8_t *mac) const {
         for (int i = 0; i < _seenFill; i++)

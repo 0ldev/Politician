@@ -13,10 +13,10 @@ NvsBssidCache nvsCache("wardrive");
 // Change to your SD card's Chip Select pin
 const int SD_CS_PIN = 5;
 
-void onPacket(const uint8_t *payload, uint16_t len, int8_t rssi, uint32_t ts_usec) {
+void onPacket(const uint8_t *payload, uint16_t len, int8_t rssi, uint8_t channel, uint32_t ts_usec) {
     // This callback receives all frames strictly matching your `capture_filter`.
     // It seamlessly creates a second PCAPNG file strictly containing raw Air Intel.
-    PcapngFileLogger::appendPacket(SD, "/intel.pcapng", payload, len, rssi, ts_usec);
+    PcapngFileLogger::appendPacket(SD, "/intel.pcapng", payload, len, rssi, channel, ts_usec);
 }
 
 void onHandshake(const HandshakeRecord &rec) {

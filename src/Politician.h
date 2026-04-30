@@ -402,7 +402,7 @@ private:
     uint8_t    _channel;
     uint8_t    _rxChannel;
     bool       _hopping;
-    bool       _channelTrafficSeen;
+    volatile bool _channelTrafficSeen;
     uint32_t   _lastHopMs;
     int8_t     _lastRssi;
     uint8_t    _hopIndex;
@@ -489,6 +489,9 @@ private:
         uint8_t  max_rate_mbps;         // Highest rate from Supported Rates IE (Mbps)
         uint16_t sta_count;             // Connected client count from BSS Load
         uint8_t  chan_util;             // Channel utilization (0-255)
+        uint8_t  venue_group;           // 802.11u Venue Group
+        uint8_t  venue_type;            // 802.11u Venue Type
+        uint8_t  network_type;          // 802.11u Access Network Type
         struct {
             uint8_t active             : 1;
             uint8_t has_active_clients : 1;
@@ -502,11 +505,12 @@ private:
     };
     ApCacheEntry _apCache[MAX_AP_CACHE];
 
-    void _cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
+    ApCacheEntry* _cacheAp(const uint8_t *bssid, const char *ssid, uint8_t ssid_len,
                   uint8_t enc, uint8_t channel, int8_t rssi,
                   bool is_wpa3_only = false, bool wps = false,
                   bool pmf_capable = false, bool pmf_required = false,
-                  bool ft_capable = false, uint16_t sta_count = 0, uint8_t chan_util = 0);
+                  bool ft_capable = false, uint16_t sta_count = 0, uint8_t chan_util = 0,
+                  uint8_t venue_group = 0, uint8_t venue_type = 0, uint8_t network_type = 0);
     bool _lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len);
     bool _lookupEnc(const uint8_t *bssid, uint8_t &out_enc);
 
