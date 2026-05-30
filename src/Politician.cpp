@@ -9,7 +9,8 @@
 namespace politician {
 
 // ─── Static members ───────────────────────────────────────────────────────────
-Politician *Politician::_instance = nullptr;
+Politician *Politician::_instances[POLITICIAN_MAX_INSTANCES] = {};
+bool        Politician::_wifiInitialized = false;
 
 // Default 2.4GHz hopping sequence (channels 1-13)
 const uint8_t Politician::HOP_SEQ[]  = {1, 6, 11, 2, 7, 3, 8, 4, 9, 5, 10, 12, 13};
@@ -54,7 +55,6 @@ Politician::Politician()
       _hasTarget(false), _targetChannel(1),
       _capturedCount(0)
 {
-    _instance = this;
     memset(&_stats,           0, sizeof(_stats));
     memset(_attackOverrides,  0, sizeof(_attackOverrides));
     memset(_injectQueue,      0, sizeof(_injectQueue));
@@ -97,6 +97,25 @@ void Politician::_log(const char *fmt, ...) {
 Error Politician::begin(const Config &cfg) {
     _cfg = cfg;
 
+    // ── Register this instance in the shared instance registry ───────────────
+    bool registered = false;
+    for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
+        if (_instances[i] == this) { registered = true; break; }  // already registered (re-begin)
+    }
+    if (!registered) {
+        for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
+            if (_instances[i] == nullptr) {
+                _instances[i] = this;
+                registered = true;
+                break;
+            }
+        }
+        if (!registered) {
+            _log("[WiFi] ERR: all %d instance slots occupied\n", POLITICIAN_MAX_INSTANCES);
+            return ERR_MAX_INSTANCES;
+        }
+    }
+
     // Validate and clamp critical config values
     if (_cfg.smart_hopping && _cfg.hop_min_dwell_ms >= _cfg.hop_max_dwell_ms) {
         _log("[Config] WARNING: hop_min_dwell_ms (%u) >= hop_max_dwell_ms (%u); clamping max to min+50ms\n",
@@ -115,38 +134,44 @@ Error Politician::begin(const Config &cfg) {
     _karmaEnabled = _cfg.karma_enabled;
 #endif
 
-    wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
-    if (esp_wifi_init(&wifi_cfg) != ESP_OK) return ERR_WIFI_INIT;
-    if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) return ERR_WIFI_INIT;
+    // ── WiFi driver init — only the first instance does this ─────────────────
+    if (!_wifiInitialized) {
+        wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
+        if (esp_wifi_init(&wifi_cfg) != ESP_OK) return ERR_WIFI_INIT;
+        if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) return ERR_WIFI_INIT;
 
-    if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) return ERR_WIFI_INIT;
+        if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) return ERR_WIFI_INIT;
 
-    wifi_config_t ap_cfg = {};
-    const char *ap_ssid = _cfg.soft_ap_ssid ? _cfg.soft_ap_ssid : "WiFighter";
-    memcpy(ap_cfg.ap.ssid, ap_ssid, strlen(ap_ssid));
-    ap_cfg.ap.ssid_len        = (uint8_t)strlen(ap_ssid);
-    ap_cfg.ap.ssid_hidden     = _cfg.soft_ap_ssid ? 0 : 1;
-    ap_cfg.ap.max_connection  = 4;
-    ap_cfg.ap.authmode        = WIFI_AUTH_OPEN;
-    ap_cfg.ap.channel         = 1;
-    ap_cfg.ap.beacon_interval = 1000;
-    if (esp_wifi_set_config(WIFI_IF_AP, &ap_cfg) != ESP_OK) return ERR_WIFI_INIT;
+        wifi_config_t ap_cfg = {};
+        const char *ap_ssid = _cfg.soft_ap_ssid ? _cfg.soft_ap_ssid : "WiFighter";
+        memcpy(ap_cfg.ap.ssid, ap_ssid, strlen(ap_ssid));
+        ap_cfg.ap.ssid_len        = (uint8_t)strlen(ap_ssid);
+        ap_cfg.ap.ssid_hidden     = _cfg.soft_ap_ssid ? 0 : 1;
+        ap_cfg.ap.max_connection  = 4;
+        ap_cfg.ap.authmode        = WIFI_AUTH_OPEN;
+        ap_cfg.ap.channel         = 1;
+        ap_cfg.ap.beacon_interval = 1000;
+        if (esp_wifi_set_config(WIFI_IF_AP, &ap_cfg) != ESP_OK) return ERR_WIFI_INIT;
 
-    if (esp_wifi_start() != ESP_OK) return ERR_WIFI_INIT;
+        if (esp_wifi_start() != ESP_OK) return ERR_WIFI_INIT;
+
+        esp_log_level_set("wifi", ESP_LOG_NONE);
+
+        wifi_promiscuous_filter_t filt = {
+            .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
+        };
+        if (esp_wifi_set_promiscuous_filter(&filt) != ESP_OK) return ERR_WIFI_INIT;
+        if (esp_wifi_set_promiscuous(true) != ESP_OK) return ERR_WIFI_INIT;
+        if (esp_wifi_set_promiscuous_rx_cb(&_promiscuousCb) != ESP_OK) return ERR_WIFI_INIT;
+
+        _wifiInitialized = true;
+    }
 
     esp_wifi_get_mac(WIFI_IF_STA, _ownStaMac);
     _log("[WiFi] STA MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
         _ownStaMac[0], _ownStaMac[1], _ownStaMac[2],
         _ownStaMac[3], _ownStaMac[4], _ownStaMac[5]);
 
-    esp_log_level_set("wifi", ESP_LOG_NONE);
-
-    wifi_promiscuous_filter_t filt = {
-        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
-    };
-    if (esp_wifi_set_promiscuous_filter(&filt) != ESP_OK) return ERR_WIFI_INIT;
-    if (esp_wifi_set_promiscuous(true) != ESP_OK) return ERR_WIFI_INIT;
-    if (esp_wifi_set_promiscuous_rx_cb(&_promiscuousCb) != ESP_OK) return ERR_WIFI_INIT;
     if (esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) return ERR_WIFI_INIT;
 
     // Initialize Thread Safety
@@ -263,6 +288,14 @@ void Politician::stop() {
         _active           = false;
         xSemaphoreGiveRecursive(_lock);
     }
+    // Deregister from the shared instance registry so the ISR skips this instance.
+    for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
+        if (_instances[i] == this) {
+            _instances[i] = nullptr;
+            break;
+        }
+    }
+    _initialized = false;
     _log("[WiFi] Engine stopped\n");
 }
 
@@ -749,14 +782,15 @@ void Politician::tick() {
 
 // ─── Static promiscuous callback (IRAM) ──────────────────────────────────────
 void IRAM_ATTR Politician::_promiscuousCb(void *buf, wifi_promiscuous_pkt_type_t type) {
-    if (!_instance || !_instance->_active || !_instance->_rb) return;
-
     const wifi_promiscuous_pkt_t *pkt = (const wifi_promiscuous_pkt_t *)buf;
     uint16_t total_len = sizeof(wifi_pkt_rx_ctrl_t) + pkt->rx_ctrl.sig_len;
 
-    // Send raw packet data to ringbuffer for async processing
-    if (xRingbufferSendFromISR(_instance->_rb, buf, total_len, NULL) != pdTRUE) {
-        _instance->_stats.dropped++;
+    for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
+        Politician *inst = _instances[i];
+        if (!inst || !inst->_active || !inst->_rb) continue;
+        if (xRingbufferSendFromISR(inst->_rb, buf, total_len, NULL) != pdTRUE) {
+            inst->_stats.dropped++;
+        }
     }
 }
 

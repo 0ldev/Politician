@@ -93,7 +93,9 @@ enum Error {
     ERR_INVALID_CH = 2,
     ERR_NOT_ACTIVE = 3,
     ERR_ALREADY_CAPTURED = 4,
-    ERR_NOT_FOUND = 5
+    ERR_NOT_FOUND = 5,
+    /** Returned by begin() when all POLITICIAN_MAX_INSTANCES slots are occupied. */
+    ERR_MAX_INSTANCES = 6
 };
 
 /**

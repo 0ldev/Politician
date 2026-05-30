@@ -26,6 +26,18 @@ namespace politician {
 #define POLITICIAN_MAX_CHANNELS 50
 #endif
 
+/**
+ * Maximum number of concurrent Politician instances that can be active at once.
+ * Each instance gets its own ring buffer and worker task, but they share the
+ * single Wi-Fi radio — channel changes made by one instance affect all others.
+ * On standard ESP32/ESP32-S2/ESP32-C3 the practical limit is 1; on ESP32-S3
+ * with an external SPI radio a second instance can operate on that interface.
+ * Define before including Politician.h to override the default of 2.
+ */
+#ifndef POLITICIAN_MAX_INSTANCES
+#define POLITICIAN_MAX_INSTANCES 2
+#endif
+
 // ─── 802.11 Frame Structures ──────────────────────────────────────────────────
 
 typedef struct {
@@ -457,7 +469,10 @@ public:
 private:
     static void IRAM_ATTR _promiscuousCb(void *buf, wifi_promiscuous_pkt_type_t type);
     static void _workerTask(void *pvParameters);
-    static Politician *_instance;
+    /** Per-process instance registry; populated by begin(), cleared by stop(). */
+    static Politician *_instances[POLITICIAN_MAX_INSTANCES];
+    /** Set to true after the first successful begin() so subsequent calls skip WiFi driver init. */
+    static bool        _wifiInitialized;
 
     RingbufHandle_t _rb = nullptr;
     TaskHandle_t    _task = nullptr;

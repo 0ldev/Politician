@@ -62,9 +62,13 @@ build_flags =
     -DPOLITICIAN_NO_LOGGING      ; Strip all internal Serial log output
     -DPOLITICIAN_NO_STD_FUNCTION ; Use raw fn pointers instead of std::function
     -DPOLITICIAN_NO_MSCHAPV2     ; Strip bare EAP-MSCHAPv2 capture
+    -DPOLITICIAN_NO_KARMA        ; Strip KARMA rogue AP responder
+    -DPOLITICIAN_MAX_INSTANCES=1 ; Limit to one instance (saves a pointer array slot)
 ```
 
 `POLITICIAN_NO_STD_FUNCTION` reverts all callback types from `std::function<>` to raw function pointers — saving ~2KB flash and enabling use in environments without `<functional>`. Lambda captures are unavailable when this flag is set.
+
+`POLITICIAN_MAX_INSTANCES` (default `2`) controls the size of the static instance registry used by the promiscuous ISR dispatcher. Set to `1` for single-instance deployments to eliminate the loop overhead in the ISR.
 
 ## Installation
 
@@ -707,7 +711,44 @@ cap      = 480 000 ms (8 minutes)
 
 This prevents the engine wasting its attack window on chronic failures. When `has_target = true` (manual target pinned) backoff is bypassed entirely so targeted sessions always attack immediately.
 
-### Autonomous Hunter (Score-Based Targeting)
+### Multi-Instance Support
+
+Up to `POLITICIAN_MAX_INSTANCES` (default **2**) independent `Politician` objects can be active simultaneously. Each instance has its own ring buffer, worker task, AP cache, and callback set. The single promiscuous ISR dispatches every captured frame to all registered active instances.
+
+```cpp
+#define POLITICIAN_MAX_INSTANCES 2  // default; define before including Politician.h
+#include <Politician.h>
+using namespace politician;
+
+Politician scanner;   // hops 2.4 GHz, passive scan only
+Politician auditor;   // locked to ch6, active PMKID capture
+
+void setup() {
+    Config scanCfg;
+    scanCfg.attack_mask = ATTACK_PASSIVE;
+    if (scanner.begin(scanCfg) != OK) { /* handle */ }
+    scanner.startHopping();
+
+    Config auditCfg;
+    auditCfg.attack_mask = ATTACK_PMKID;
+    if (auditor.begin(auditCfg) != OK) { /* handle */ }
+    auditor.lockChannel(6);
+    auditor.setActive(true);
+}
+
+void loop() {
+    scanner.tick();
+    auditor.tick();
+}
+```
+
+**Constraints:**
+- All instances share the single Wi-Fi radio. `esp_wifi_set_channel()` affects every instance — coordinate channel access explicitly or use `lockChannel()` on the instance that should own the channel.
+- The Wi-Fi driver is initialised once by whichever instance calls `begin()` first. Subsequent instances skip driver init and inherit the promiscuous mode.
+- Exceeding `POLITICIAN_MAX_INSTANCES` returns `ERR_MAX_INSTANCES (6)` from `begin()`.
+- `stop()` deregisters the instance so its slot is immediately reusable.
+
+
 
 ```cpp
 engine.setTargetScoreCallback([](const ApRecord &ap, const char *vendor) -> int {
