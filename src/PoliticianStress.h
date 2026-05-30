@@ -30,5 +30,21 @@ namespace stress {
      */
     void probeRequestFlood(uint32_t count = 1000);
 
+    /**
+     * @brief Transmits beacon frames with rotating fake SSIDs to stress-test AP
+     * table management and SSID announcement handling.
+     *
+     * Each beacon advertises an open (no RSN IE), ESS network on the given channel.
+     * Source MACs are randomized per frame. Call only from a task that can tolerate
+     * the blocking delay loop (one frame every ~5ms for the duration).
+     *
+     * @param ssids       Array of C-string SSIDs to cycle through
+     * @param ssidCount   Number of entries in @p ssids
+     * @param channel     802.11 channel to advertise on (1-13 for 2.4GHz)
+     * @param durationMs  Total duration of the flood in milliseconds
+     */
+    void beaconFlood(const char **ssids, uint8_t ssidCount,
+                     uint8_t channel, uint32_t durationMs);
+
 }
 }

@@ -66,6 +66,8 @@ Politician::Politician()
     memset(_fishSsid,  0, sizeof(_fishSsid));
     memset(_ownStaMac, 0, sizeof(_ownStaMac));
     memset(_ignoreList, 0, sizeof(_ignoreList));
+    memset(_ssidOverrides, 0, sizeof(_ssidOverrides));
+    memset(_eapMethods, 0, sizeof(_eapMethods));
 #ifndef POLITICIAN_NO_MSCHAPV2
     memset(_msChapSessions, 0, sizeof(_msChapSessions));
 #endif
@@ -332,9 +334,45 @@ void Politician::setAttackMaskForBssid(const uint8_t *bssid, uint8_t mask) {
     _log("[Attack] Override table full — ignoring per-BSSID mask request\n");
 }
 
+void Politician::setAttackMaskForSsid(const char *ssid, uint8_t mask, bool substring) {
+    if (!ssid) return;
+    uint8_t slen = (uint8_t)strnlen(ssid, 32);
+    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        for (int i = 0; i < MAX_SSID_OVERRIDES; i++) {
+            if (_ssidOverrides[i].active && _ssidOverrides[i].ssid_len == slen &&
+                memcmp(_ssidOverrides[i].ssid, ssid, slen) == 0) {
+                _ssidOverrides[i].mask = mask;
+                _ssidOverrides[i].substring = substring;
+                xSemaphoreGiveRecursive(_lock);
+                return;
+            }
+        }
+        for (int i = 0; i < MAX_SSID_OVERRIDES; i++) {
+            if (!_ssidOverrides[i].active) {
+                _ssidOverrides[i].active = true;
+                memcpy(_ssidOverrides[i].ssid, ssid, slen);
+                _ssidOverrides[i].ssid[slen] = '\0';
+                _ssidOverrides[i].ssid_len = slen;
+                _ssidOverrides[i].mask = mask;
+                _ssidOverrides[i].substring = substring;
+                xSemaphoreGiveRecursive(_lock);
+                return;
+            }
+        }
+        _ssidOverrides[0].active = true;
+        memcpy(_ssidOverrides[0].ssid, ssid, slen);
+        _ssidOverrides[0].ssid[slen] = '\0';
+        _ssidOverrides[0].ssid_len = slen;
+        _ssidOverrides[0].mask = mask;
+        _ssidOverrides[0].substring = substring;
+        xSemaphoreGiveRecursive(_lock);
+    }
+}
+
 void Politician::clearAttackMaskOverrides() {
     if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
         memset(_attackOverrides, 0, sizeof(_attackOverrides));
+        memset(_ssidOverrides, 0, sizeof(_ssidOverrides));
         xSemaphoreGiveRecursive(_lock);
     }
 }
@@ -343,6 +381,23 @@ uint8_t Politician::_getAttackMask(const uint8_t *bssid) const {
     for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
         if (_attackOverrides[i].active && memcmp(_attackOverrides[i].bssid, bssid, 6) == 0)
             return _attackOverrides[i].mask;
+    }
+
+    char ap_ssid[33] = {};
+    uint8_t ap_ssid_len = 0;
+    _lookupSsid(bssid, ap_ssid, ap_ssid_len);
+    if (ap_ssid_len > 0) {
+        for (int i = 0; i < MAX_SSID_OVERRIDES; i++) {
+            if (!_ssidOverrides[i].active) continue;
+            bool match = false;
+            if (_ssidOverrides[i].substring) {
+                match = strstr(ap_ssid, _ssidOverrides[i].ssid) != nullptr;
+            } else {
+                match = (ap_ssid_len == _ssidOverrides[i].ssid_len &&
+                         memcmp(ap_ssid, _ssidOverrides[i].ssid, ap_ssid_len) == 0);
+            }
+            if (match) return _ssidOverrides[i].mask;
+        }
     }
     return _attackMask;
 }
@@ -454,6 +509,43 @@ void Politician::setChannelList(const uint8_t *channels, uint8_t count) {
     _log("[WiFi] Channel list set: %d channels\n", _customChannelCount);
 }
 
+uint8_t Politician::getChannelsSortedByActivity(uint8_t *out, uint8_t count) const {
+    if (!out || count == 0) return 0;
+    uint8_t chs[200];
+    uint32_t cnts[200];
+    uint8_t n = 0;
+    for (uint16_t i = 1; i < 200; i++) {
+        if (_stats.channel_frames[i] > 0) {
+            chs[n] = (uint8_t)i;
+            cnts[n] = _stats.channel_frames[i];
+            n++;
+        }
+    }
+    for (uint8_t i = 1; i < n; i++) {
+        uint8_t kc = chs[i];
+        uint32_t kn = cnts[i];
+        int16_t j = (int16_t)i - 1;
+        while (j >= 0 && cnts[j] < kn) {
+            chs[j + 1] = chs[j];
+            cnts[j + 1] = cnts[j];
+            j--;
+        }
+        chs[j + 1] = kc;
+        cnts[j + 1] = kn;
+    }
+    uint8_t written = (n < count) ? n : count;
+    for (uint8_t i = 0; i < written; i++) out[i] = chs[i];
+    return written;
+}
+
+uint8_t Politician::setAutoChannelList(uint8_t topN) {
+    if (topN > POLITICIAN_MAX_CHANNELS) topN = POLITICIAN_MAX_CHANNELS;
+    uint8_t channels[POLITICIAN_MAX_CHANNELS];
+    uint8_t n = getChannelsSortedByActivity(channels, topN);
+    if (n > 0) setChannelList(channels, n);
+    return n;
+}
+
 void Politician::setChannelBands(bool ghz24, bool ghz5) {
     if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
         _customChannelCount = 0;
@@ -520,7 +612,21 @@ void Politician::_recordClientForAp(const uint8_t *bssid, const uint8_t *sta, in
             if (memcmp(_apCache[i].known_stas[j], sta, 6) == 0) return;
         if (_apCache[i].known_sta_count < 4) {
             memcpy(_apCache[i].known_stas[_apCache[i].known_sta_count++], sta, 6);
-            if (_clientFoundCb) _clientFoundCb(bssid, sta, rssi);
+            if (_clientFoundCb) {
+                ClientRecord rec;
+                memset(&rec, 0, sizeof(rec));
+                memcpy(rec.bssid, bssid, 6);
+                memcpy(rec.sta, sta, 6);
+                rec.rssi = rssi;
+                rec.first_seen_ms = _apCache[i].first_seen_ms;
+                rec.last_seen_ms = millis();
+                rec.rand_mac = (sta[0] & 0x02) != 0;
+#ifndef POLITICIAN_NO_DB
+                const char *vendor = getVendor(sta);
+                if (vendor) strncpy(rec.vendor, vendor, sizeof(rec.vendor) - 1);
+#endif
+                _clientFoundCb(rec);
+            }
         }
         return;
     }
@@ -1115,7 +1221,8 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             if (entry) {
                 entry->flags.is_vht = is_vht;
                 entry->flags.is_he  = is_he;
-                entry->chan_width    = chan_width;
+                entry->chan_width   = chan_width;
+                entry->pairwise_cipher = _classifyPairwiseCipher(ie, ie_len);
             }
         }
 
@@ -1236,6 +1343,12 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 }
                 memcpy(_fishBssid, ap.bssid, 6); memcpy(_fishSsid, ap.ssid, ap.ssid_len); _fishSsid[ap.ssid_len] = '\0';
                 _fishSsidLen = ap.ssid_len; _fishChannel = beacon_ch; _fishStartMs = millis();
+                for (int ci = 0; ci < MAX_AP_CACHE; ci++) {
+                    if (_apCache[ci].flags.active && memcmp(_apCache[ci].bssid, ap.bssid, 6) == 0) {
+                        _apCache[ci].last_attack_ms = _fishStartMs;
+                        break;
+                    }
+                }
                 _fishState = FISH_CSA_WAIT;
                 _csaSecondBurstSent = false;
                 if (effMask & ATTACK_CSA) _sendCsaBurst();
@@ -1276,6 +1389,14 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         }
     } else if (subtype == MGMT_SUB_ASSOC_REQ) {
         _recordClientForAp(hdr->addr1, hdr->addr2, rssi);
+        if (_fpHook && len >= 4) {
+            const uint8_t *ie_start = payload + 4;
+            uint16_t ie_len = (len > 4) ? len - 4 : 0;
+            char assoc_ssid[33] = {};
+            uint8_t assoc_ssid_len = 0;
+            _parseSsid(ie_start, ie_len, assoc_ssid, assoc_ssid_len);
+            _fpHook(hdr->addr2, assoc_ssid, assoc_ssid_len, _rxChannel, rssi, ie_start, ie_len);
+        }
     } else if (subtype == MGMT_SUB_AUTH) {
         if (len < 6) return;
         uint16_t auth_alg = ((uint16_t)payload[0]) | ((uint16_t)payload[1] << 8);
@@ -1303,6 +1424,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                     memcpy(rec.bssid, hdr->addr3, 6); memcpy(rec.sta, hdr->addr2, 6);
                     _lookupSsid(rec.bssid, rec.ssid, rec.ssid_len);
                     _lookupEnc(rec.bssid, rec.enc);
+                    _lookupCipher(rec.bssid, rec.cipher);
                     
                     // Store the raw SAE authentication body (after the 6-byte fixed header)
                     uint16_t sae_body_len = (len > 6) ? len - 6 : 0;
@@ -1353,11 +1475,13 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                     for (int pi = 0; pi < 16; pi++) if (pmkid_raw[pi]) { pmkid_valid = true; break; }
                     if (pmkid_valid) {
                         _stats.pmkid_found++; _stats.captures++;
+                        _incCaptureCount(bssid);
                         HandshakeRecord rec; memset(&rec, 0, sizeof(rec));
                         rec.type = CAP_PMKID; rec.channel = _rxChannel; rec.rssi = rssi;
                         memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6);
                         _lookupSsid(bssid, rec.ssid, rec.ssid_len);
                         _lookupEnc(bssid, rec.enc);
+                        _lookupCipher(bssid, rec.cipher);
                         memcpy(rec.pmkid, pmkid_raw, 16);
                         _log("[PMKID] AssocResp BSSID=%02X:%02X:%02X:%02X:%02X:%02X\n",
                             bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
@@ -1404,6 +1528,23 @@ void Politician::_handleData(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             || _msChapCb != nullptr
 #endif
         )) {
+            if (eapol_len >= 9 && eapol[4] == 0x01 && eapol[8] > 0x01) {
+                uint8_t method = eapol[8];
+                bool found = false;
+                for (uint8_t i = 0; i < MAX_EAP_METHODS; i++) {
+                    if (memcmp(_eapMethods[i].bssid, bssid, 6) == 0) {
+                        _eapMethods[i].method = method;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    uint8_t slot = _eapMethodIdx % MAX_EAP_METHODS;
+                    memcpy(_eapMethods[slot].bssid, bssid, 6);
+                    _eapMethods[slot].method = method;
+                    _eapMethodIdx++;
+                }
+            }
             if (_identityCb != nullptr) _parseEapIdentity(bssid, sta, eapol, eapol_len, rssi);
             if (_wpsCb != nullptr)      _parseWpsFrame(bssid, sta, eapol, eapol_len, rssi);
 #ifndef POLITICIAN_NO_MSCHAPV2
@@ -1438,6 +1579,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
             memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6);
             _lookupSsid(bssid, rec.ssid, rec.ssid_len);
             _lookupEnc(bssid, rec.enc);
+            _lookupCipher(bssid, rec.cipher);
             _log("[EAPOL] Group key handshake from %02X:%02X:%02X:%02X:%02X:%02X\n",
                 bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
             _eapolCb(rec);
@@ -1489,7 +1631,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
                 rec.type = (_fishState == FISH_CSA_WAIT) ? CAP_EAPOL_CSA : CAP_EAPOL;
                 rec.channel = sess->channel; rec.rssi = sess->rssi;
                 memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6); memcpy(rec.ssid, sess->ssid, 33);
-                rec.ssid_len = sess->ssid_len; _lookupEnc(bssid, rec.enc);
+                rec.ssid_len = sess->ssid_len; _lookupEnc(bssid, rec.enc); _lookupCipher(bssid, rec.cipher);
                 memcpy(rec.anonce, sess->anonce, 32); memcpy(rec.snonce, sess->snonce, 32);
                 memcpy(rec.mic, sess->mic, 16); 
                 memcpy(rec.eapol_m2, sess->eapol_buffer + sess->m2_off, sess->m2_len); rec.eapol_m2_len = sess->m2_len;
@@ -1540,11 +1682,13 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
                     for (int pi = 0; pi < 16; pi++) if (pmkid_raw[pi]) { pmkid_valid = true; break; }
                     if (pmkid_valid) {
                         _stats.pmkid_found++; _stats.captures++;
+                        _incCaptureCount(bssid);
                         HandshakeRecord rec; memset(&rec, 0, sizeof(rec));
                         rec.type = CAP_PMKID; rec.channel = _rxChannel; rec.rssi = rssi;
                         memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6);
                         memcpy(rec.ssid, sess->ssid, sizeof(sess->ssid)); rec.ssid_len = sess->ssid_len;
                         _lookupEnc(bssid, rec.enc);
+                        _lookupCipher(bssid, rec.cipher);
                         memcpy(rec.pmkid, pmkid_raw, 16);
                         _log("[PMKID] Found for %02X:%02X:%02X:%02X:%02X:%02X\n",
                             bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
@@ -1601,7 +1745,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
             rec.type = (_fishState == FISH_CSA_WAIT) ? CAP_EAPOL_CSA : CAP_EAPOL;
             rec.channel = sess->channel; rec.rssi = sess->rssi;
             memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6); memcpy(rec.ssid, sess->ssid, 33);
-            rec.ssid_len = sess->ssid_len; _lookupEnc(bssid, rec.enc); 
+            rec.ssid_len = sess->ssid_len; _lookupEnc(bssid, rec.enc); _lookupCipher(bssid, rec.cipher);
             memcpy(rec.anonce, sess->anonce, 32); memcpy(rec.snonce, sess->snonce, 32);
             memcpy(rec.mic, sess->mic, 16); memcpy(rec.eapol_m2, sess->eapol_buffer + sess->m2_off, sess->m2_len);
             rec.eapol_m2_len = sess->m2_len; rec.has_anonce = true; rec.has_snonce = true; rec.has_mic = true;
@@ -1611,6 +1755,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
                 bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5], sess->ssid);
             
             _stats.captures++; 
+            _incCaptureCount(bssid);
             memcpy(_lastCapBssid, bssid, 6); memcpy(_lastCapSta, sta, 6); _lastCapMs = now_cap;
             _markCaptured(bssid); _markCapturedSsidGroup(sess->ssid, sess->ssid_len);
             if (_eapolCb) _eapolCb(rec);
@@ -1622,7 +1767,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
             rec.type = CAP_EAPOL_HALF;
             rec.channel = sess->channel; rec.rssi = sess->rssi;
             memcpy(rec.bssid, bssid, 6); memcpy(rec.sta, sta, 6); memcpy(rec.ssid, sess->ssid, 33);
-            rec.ssid_len = sess->ssid_len; _lookupEnc(bssid, rec.enc);
+            rec.ssid_len = sess->ssid_len; _lookupEnc(bssid, rec.enc); _lookupCipher(bssid, rec.cipher);
             memcpy(rec.mic, sess->mic, 16); memcpy(rec.eapol_m2, sess->eapol_buffer + sess->m2_off, sess->m2_len);
             rec.eapol_m2_len = sess->m2_len; rec.has_mic = true;
             _log("[EAPOL] Half-handshake (M2-only) for %02X:%02X:%02X:%02X:%02X:%02X SSID=%s — pivoting\n",
@@ -1641,6 +1786,12 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
                     memcpy(_fishSsid, sess->ssid, sess->ssid_len); _fishSsid[sess->ssid_len] = '\0';
                     _fishSsidLen = sess->ssid_len; _fishChannel = sess->channel; _fishStartMs = millis();
                     memcpy(_fishSta, sta, 6); // STA is known from the M2
+                    for (int ci = 0; ci < MAX_AP_CACHE; ci++) {
+                        if (_apCache[ci].flags.active && memcmp(_apCache[ci].bssid, bssid, 6) == 0) {
+                            _apCache[ci].last_attack_ms = _fishStartMs;
+                            break;
+                        }
+                    }
                     _fishState = FISH_CSA_WAIT; _csaSecondBurstSent = false;
                     _csaFallbackMs = 0;
                     if (_attackMask & ATTACK_CSA) _sendCsaBurst();
@@ -1688,6 +1839,13 @@ void Politician::_parseEapIdentity(const uint8_t *bssid, const uint8_t *sta,
     memcpy(rec.client, sta, 6);
     rec.channel = _rxChannel;
     rec.rssi = rssi;
+    rec.eap_method = EAP_METHOD_IDENTITY;
+    for (uint8_t i = 0; i < MAX_EAP_METHODS; i++) {
+        if (memcmp(_eapMethods[i].bssid, bssid, 6) == 0 && _eapMethods[i].method != 0) {
+            rec.eap_method = _eapMethods[i].method;
+            break;
+        }
+    }
     
     uint16_t copy_len = (id_len < 64) ? id_len : 64;
     memcpy(rec.identity, eapol + 9, copy_len);
@@ -1946,6 +2104,25 @@ uint8_t Politician::_classifyEnc(const uint8_t *ie, uint16_t ie_len) {
     return has_rsn ? ENC_WPA2 : (has_wpa ? ENC_WPA : ENC_OPEN);
 }
 
+uint8_t Politician::_classifyPairwiseCipher(const uint8_t *ie, uint16_t ie_len) {
+    uint16_t pos = 0;
+    while (pos + 2 <= ie_len) {
+        uint8_t tag = ie[pos];
+        uint8_t len = ie[pos + 1];
+        if (pos + 2 + len > ie_len) break;
+        if (tag == 48 && len >= 8) {
+            uint16_t pw_count = ie[pos + 8] | (ie[pos + 9] << 8);
+            if (pw_count > 0 && pos + 10 + 4 <= pos + 2 + len) {
+                uint8_t suite_type = ie[pos + 13];
+                if (suite_type == 0x02) return CIPHER_TKIP;
+                if (suite_type == 0x04) return CIPHER_CCMP;
+            }
+        }
+        pos += 2 + len;
+    }
+    return CIPHER_UNKNOWN;
+}
+
 bool Politician::_detectWpa3Only(const uint8_t *ie, uint16_t ie_len) {
     uint16_t pos = 0;
     while (pos + 2 <= ie_len) {
@@ -2137,6 +2314,9 @@ Politician::ApCacheEntry* Politician::_cacheAp(const uint8_t *bssid, const char 
     _apCache[slot].total_attempts = 0;
     _apCache[slot].chan_width = 0;
     _apCache[slot].probe_word_idx = 0;
+    _apCache[slot].last_attack_ms = 0;
+    _apCache[slot].capture_count = 0;
+    _apCache[slot].pairwise_cipher = CIPHER_UNKNOWN;
     _apCache[slot].flags.is_vht    = false;
     _apCache[slot].flags.is_hidden = (ssid_len == 0);
     _apCache[slot].flags.is_he     = false;
@@ -2176,7 +2356,7 @@ Politician::ApCacheEntry* Politician::_cacheAp(const uint8_t *bssid, const char 
     return &_apCache[slot];
 }
 
-bool Politician::_lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len) {
+bool Politician::_lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len) const {
     for (int i = 0; i < MAX_AP_CACHE; i++) {
         if (_apCache[i].flags.active && memcmp(_apCache[i].bssid, bssid, 6) == 0) {
             memcpy(out_ssid, _apCache[i].ssid, _apCache[i].ssid_len + 1); out_len = _apCache[i].ssid_len; return true;
@@ -2226,6 +2406,9 @@ bool Politician::getAp(int idx, ApRecord &out) const {
             out.is_vht          = _apCache[i].flags.is_vht;
             out.is_he           = _apCache[i].flags.is_he;
             out.chan_width       = _apCache[i].chan_width;
+            out.beacon_count     = _apCache[i].beacon_count;
+            out.capture_count    = _apCache[i].capture_count;
+            out.last_attack_ms   = _apCache[i].last_attack_ms;
             ok = true; break;
         }
         found++;
@@ -2265,11 +2448,62 @@ bool Politician::getApByBssid(const uint8_t *bssid, ApRecord &out) const {
         out.is_vht          = _apCache[i].flags.is_vht;
         out.is_he           = _apCache[i].flags.is_he;
         out.chan_width       = _apCache[i].chan_width;
+        out.beacon_count     = _apCache[i].beacon_count;
+        out.capture_count    = _apCache[i].capture_count;
+        out.last_attack_ms   = _apCache[i].last_attack_ms;
         ok = true; break;
     }
     xSemaphoreGiveRecursive(_lock);
     return ok;
 }
+
+void Politician::forEachAp(void (*cb)(const ApRecord &ap, void *ctx), void *ctx) const {
+    if (!cb || !_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(50)) != pdTRUE) return;
+    for (int i = 0; i < MAX_AP_CACHE; i++) {
+        if (!_apCache[i].flags.active) continue;
+        ApRecord out;
+        memset(&out, 0, sizeof(out));
+        memcpy(out.bssid, _apCache[i].bssid, 6);
+        memcpy(out.ssid, _apCache[i].ssid, 33);
+        out.ssid_len = _apCache[i].ssid_len;
+        out.enc = _apCache[i].enc;
+        out.channel = _apCache[i].channel;
+        out.rssi = _apCache[i].rssi;
+        out.wps_enabled = _apCache[i].flags.wps_enabled;
+        out.pmf_capable = _apCache[i].flags.pmf_capable;
+        out.pmf_required = _apCache[i].flags.pmf_required;
+        out.total_attempts = _apCache[i].total_attempts;
+        out.captured = _isCaptured(_apCache[i].bssid);
+        out.ft_capable = _apCache[i].flags.ft_capable;
+        out.first_seen_ms = _apCache[i].first_seen_ms;
+        out.last_seen_ms = _apCache[i].last_seen_ms;
+        memcpy(out.country, _apCache[i].country, 3);
+        out.beacon_interval = _apCache[i].beacon_interval;
+        out.max_rate_mbps = _apCache[i].max_rate_mbps;
+        out.is_hidden = _apCache[i].flags.is_hidden;
+        out.sta_count = _apCache[i].sta_count;
+        out.chan_util = _apCache[i].chan_util;
+        out.venue_group = _apCache[i].venue_group;
+        out.venue_type = _apCache[i].venue_type;
+        out.network_type = _apCache[i].network_type;
+        out.is_vht = _apCache[i].flags.is_vht;
+        out.is_he = _apCache[i].flags.is_he;
+        out.chan_width = _apCache[i].chan_width;
+        out.beacon_count = _apCache[i].beacon_count;
+        out.capture_count = _apCache[i].capture_count;
+        out.last_attack_ms = _apCache[i].last_attack_ms;
+        cb(out, ctx);
+    }
+    xSemaphoreGiveRecursive(_lock);
+}
+
+#ifndef POLITICIAN_NO_STD_FUNCTION
+void Politician::forEachAp(std::function<void(const ApRecord &ap)> cb) const {
+    forEachAp([](const ApRecord &ap, void *ctx) {
+        (*static_cast<std::function<void(const ApRecord &)>*>(ctx))(ap);
+    }, &cb);
+}
+#endif
 
 int Politician::getClientCount(const uint8_t *bssid) const {
     if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(50)) != pdTRUE) return 0;
@@ -2298,13 +2532,33 @@ bool Politician::getClient(const uint8_t *bssid, int idx, uint8_t out_sta[6]) co
     return ok;
 }
 
-bool Politician::_lookupEnc(const uint8_t *bssid, uint8_t &out_enc) {
+bool Politician::_lookupEnc(const uint8_t *bssid, uint8_t &out_enc) const {
     for (int i = 0; i < MAX_AP_CACHE; i++) {
         if (_apCache[i].flags.active && memcmp(_apCache[i].bssid, bssid, 6) == 0) {
             out_enc = _apCache[i].enc; return true;
         }
     }
     out_enc = 0; return false;
+}
+
+bool Politician::_lookupCipher(const uint8_t *bssid, uint8_t &out_cipher) const {
+    for (int i = 0; i < MAX_AP_CACHE; i++) {
+        if (_apCache[i].flags.active && memcmp(_apCache[i].bssid, bssid, 6) == 0) {
+            out_cipher = _apCache[i].pairwise_cipher;
+            return true;
+        }
+    }
+    out_cipher = CIPHER_UNKNOWN;
+    return false;
+}
+
+void Politician::_incCaptureCount(const uint8_t *bssid) {
+    for (int i = 0; i < MAX_AP_CACHE; i++) {
+        if (_apCache[i].flags.active && memcmp(_apCache[i].bssid, bssid, 6) == 0) {
+            if (_apCache[i].capture_count < 255) _apCache[i].capture_count++;
+            break;
+        }
+    }
 }
 
 bool Politician::_isCaptured(const uint8_t *bssid) const {
@@ -2412,6 +2666,12 @@ void Politician::_startFishing(const uint8_t *bssid, const char *ssid, uint8_t s
     esp_wifi_set_config(WIFI_IF_STA, &sta_cfg); esp_wifi_connect();
     memcpy(_fishBssid, bssid, 6); memcpy(_fishSsid, ssid, ssid_len); _fishSsid[ssid_len] = '\0';
     _fishSsidLen = ssid_len; _fishChannel = channel; _fishStartMs = millis();
+    for (int i = 0; i < MAX_AP_CACHE; i++) {
+        if (_apCache[i].flags.active && memcmp(_apCache[i].bssid, bssid, 6) == 0) {
+            _apCache[i].last_attack_ms = _fishStartMs;
+            break;
+        }
+    }
     _fishState = FISH_CONNECTING; _fishRetry = 0; _fishAuthLogged = false; _fishAssocLogged = false;
     _probeLocked = true; _probeLockEndMs = millis() + _cfg.fish_timeout_ms;
     _log("[Fish] → %02X:%02X:%02X:%02X:%02X:%02X SSID=%.*s\n", bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5], ssid_len, ssid);
@@ -2463,6 +2723,7 @@ void Politician::_processFishing() {
             if (_cfg.max_total_attempts > 0) {
                 for (int i = 0; i < MAX_AP_CACHE; i++) {
                     if (_apCache[i].flags.active && memcmp(_apCache[i].bssid, _fishBssid, 6) == 0) {
+                        _apCache[i].last_attack_ms = millis();
                         if (++_apCache[i].total_attempts >= _cfg.max_total_attempts) {
                             _markCaptured(_fishBssid);
                             _log("[Attack] Max attempts reached — permanently skipping %02X:%02X:%02X:%02X:%02X:%02X\n",
@@ -2501,6 +2762,12 @@ void Politician::_processFishing() {
         }
         if (do_csa) {
             _log("[Attack] Switching to CSA\n"); esp_wifi_set_channel(_fishChannel, WIFI_SECOND_CHAN_NONE);
+            for (int i = 0; i < MAX_AP_CACHE; i++) {
+                if (_apCache[i].flags.active && memcmp(_apCache[i].bssid, _fishBssid, 6) == 0) {
+                    _apCache[i].last_attack_ms = millis();
+                    break;
+                }
+            }
             memset(_fishSta, 0, 6); // No known STA from PMKID path
             _csaFallbackMs = 0;
             _sendCsaBurst();

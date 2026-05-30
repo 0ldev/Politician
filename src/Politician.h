@@ -208,6 +208,21 @@ public:
     void    setAttackMaskForBssid(const uint8_t *bssid, uint8_t mask);
 
     /**
+     * @brief Sets an attack mask for all APs whose SSID matches the given string.
+     *
+     * @param ssid      The SSID string to match
+     * @param mask      Attack mask to apply (ATTACK_PASSIVE, ATTACK_PMKID, etc.)
+     * @param substring If true, matches any AP whose SSID contains @p ssid as a
+     *                  substring. If false (default), requires an exact match.
+     *
+     * Overrides are applied after per-BSSID overrides and before the global mask.
+     * If an AP matches both a BSSID override and an SSID override, the BSSID
+     * override takes precedence. Up to MAX_SSID_OVERRIDES entries are stored;
+     * subsequent calls overwrite the oldest entry on overflow.
+     */
+    void    setAttackMaskForSsid(const char *ssid, uint8_t mask, bool substring = false);
+
+    /**
      * @brief Clears all per-BSSID attack mask overrides.
      */
     void    clearAttackMaskOverrides();
@@ -280,6 +295,44 @@ public:
     bool            getApByBssid(const uint8_t *bssid, ApRecord &out) const;
 
     /**
+     * @brief Returns the N most active channels sorted by descending frame count.
+     * Uses the per-channel frame counters accumulated since the last resetStats() call.
+     * @param out   Output array to receive sorted channel numbers
+     * @param count Maximum number of channels to return
+     * @return      Actual number of channels written (≤ count)
+     */
+    uint8_t getChannelsSortedByActivity(uint8_t *out, uint8_t count) const;
+
+    /**
+     * @brief Feeds the top-N most active channels (from getChannelsSortedByActivity)
+     * into setChannelList(), replacing the current hop sequence.
+     * Call this periodically (e.g., every 60s) to adapt the hopper to live traffic.
+     * @param topN  Number of top channels to keep (clamped to POLITICIAN_MAX_CHANNELS)
+     * @return      Number of channels in the new hop list
+     */
+    uint8_t setAutoChannelList(uint8_t topN = 13);
+
+    /**
+     * @brief Iterates all active APs in the cache, calling @p cb for each one.
+     *
+     * The internal mutex is held for the entire iteration, making this safe on a
+     * multi-core FreeRTOS system. Do not call any blocking Politician API from
+     * within the callback.
+     *
+     * @param cb   Callback invoked with each AP snapshot
+     * @param ctx  Opaque user pointer passed unchanged to @p cb (may be nullptr)
+     */
+    void forEachAp(void (*cb)(const ApRecord &ap, void *ctx), void *ctx = nullptr) const;
+
+#ifndef POLITICIAN_NO_STD_FUNCTION
+    /**
+     * @brief std::function overload of forEachAp() — supports lambda captures.
+     * Gated by POLITICIAN_NO_STD_FUNCTION.
+     */
+    void forEachAp(std::function<void(const ApRecord &ap)> cb) const;
+#endif
+
+    /**
      * @brief Returns the number of unique clients seen associated to a given AP.
      * @param bssid 6-byte BSSID of the AP.
      * @return Client count (0-4), or 0 if BSSID is not in cache.
@@ -308,7 +361,7 @@ public:
     using AttackResultCb   = std::function<void(const AttackResultRecord &rec)>;
     using ProbeRequestCb   = std::function<void(const ProbeRequestRecord &rec)>;
     using DisruptCb        = std::function<void(const DisruptRecord &rec)>;
-    using ClientFoundCb    = std::function<void(const uint8_t *bssid, const uint8_t *sta, int8_t rssi)>;
+    using ClientFoundCb    = std::function<void(const ClientRecord &rec)>;
     using WpsCb            = std::function<void(const WpsRecord &rec)>;
 #ifndef POLITICIAN_NO_MSCHAPV2
     using MsChapCb         = std::function<void(const MsChapRecord &rec)>;
@@ -323,7 +376,7 @@ public:
     using AttackResultCb   = void (*)(const AttackResultRecord &rec);
     using ProbeRequestCb   = void (*)(const ProbeRequestRecord &rec);
     using DisruptCb        = void (*)(const DisruptRecord &rec);
-    using ClientFoundCb    = void (*)(const uint8_t *bssid, const uint8_t *sta, int8_t rssi);
+    using ClientFoundCb    = void (*)(const ClientRecord &rec);
     using WpsCb            = void (*)(const WpsRecord &rec);
 #ifndef POLITICIAN_NO_MSCHAPV2
     using MsChapCb         = void (*)(const MsChapRecord &rec);
@@ -493,6 +546,7 @@ private:
 #endif
     void _parseSsid(const uint8_t *ie, uint16_t ie_len, char *out, uint8_t &out_len);
     uint8_t _classifyEnc(const uint8_t *ie, uint16_t ie_len);
+    uint8_t _classifyPairwiseCipher(const uint8_t *ie, uint16_t ie_len);
     bool _detectWpa3Only(const uint8_t *ie, uint16_t ie_len);
     void _detectPmfFlags(const uint8_t *ie, uint16_t ie_len, bool &pmf_capable, bool &pmf_required);
     bool _detectFt(const uint8_t *ie, uint16_t ie_len);
@@ -526,6 +580,13 @@ private:
     static const int MAX_ATTACK_OVERRIDES = 8;
     struct AttackOverride { bool active; uint8_t bssid[6]; uint8_t mask; };
     AttackOverride _attackOverrides[MAX_ATTACK_OVERRIDES];
+    struct SsidOverride { bool active; char ssid[33]; uint8_t ssid_len; uint8_t mask; bool substring; };
+    static const int MAX_SSID_OVERRIDES = 8;
+    SsidOverride _ssidOverrides[MAX_SSID_OVERRIDES];
+    struct EapMethodSeen { uint8_t bssid[6]; uint8_t method; };
+    static const uint8_t MAX_EAP_METHODS = 8;
+    EapMethodSeen _eapMethods[MAX_EAP_METHODS];
+    uint8_t       _eapMethodIdx = 0;
     uint8_t _getAttackMask(const uint8_t *bssid) const;
 
     bool       _hasTarget;
@@ -634,6 +695,9 @@ private:
         } flags;
         uint8_t  chan_width;            // Max channel width: 0=20 1=40 2=80 3=160 4=80+80 (MHz)
         uint8_t  probe_word_idx;        // Next wordlist index to probe for this hidden AP
+        uint32_t last_attack_ms;        // millis() when the most recent attack was initiated
+        uint8_t  capture_count;         // Number of successful captures for this BSSID
+        uint8_t  pairwise_cipher;       // CIPHER_TKIP/CIPHER_CCMP/CIPHER_UNKNOWN from RSN IE
     };
     ApCacheEntry _apCache[MAX_AP_CACHE];
 
@@ -643,8 +707,9 @@ private:
                   bool pmf_capable = false, bool pmf_required = false,
                   bool ft_capable = false, uint16_t sta_count = 0, uint8_t chan_util = 0,
                   uint8_t venue_group = 0, uint8_t venue_type = 0, uint8_t network_type = 0);
-    bool _lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len);
-    bool _lookupEnc(const uint8_t *bssid, uint8_t &out_enc);
+    bool _lookupSsid(const uint8_t *bssid, char *out_ssid, uint8_t &out_len) const;
+    bool _lookupEnc(const uint8_t *bssid, uint8_t &out_enc) const;
+    bool _lookupCipher(const uint8_t *bssid, uint8_t &out_cipher) const;
 
     enum FishState : uint8_t { FISH_IDLE = 0, FISH_CONNECTING = 1, FISH_CSA_WAIT = 2 };
     FishState _fishState;
@@ -671,6 +736,7 @@ private:
     void _recordClientForAp(const uint8_t *bssid, const uint8_t *sta, int8_t rssi = 0);
     void _markCapturedSsidGroup(const char *ssid, uint8_t ssid_len);
     void _markCaptured(const uint8_t *bssid);
+    void _incCaptureCount(const uint8_t *bssid);
 
     static const int MAX_SESSIONS = POLITICIAN_MAX_SESSIONS;
     struct Session {

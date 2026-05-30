@@ -142,6 +142,46 @@ struct Config {
 #endif
 };
 
+/**
+ * @brief Validates a Config struct and returns human-readable warning strings
+ * for values that will be silently clamped or that may cause unexpected behavior.
+ *
+ * Call this before engine.begin(cfg) to surface misconfigurations early.
+ *
+ * @param cfg     The Config to validate.
+ * @param out     Output array; each element is set to a static warning string.
+ * @param maxOut  Capacity of @p out.
+ * @return        Number of warnings written (0 = configuration looks clean).
+ *
+ * Example:
+ * @code
+ * const char *warnings[8];
+ * int n = politician::validateConfig(cfg, warnings, 8);
+ * for (int i = 0; i < n; i++) Serial.println(warnings[i]);
+ * @endcode
+ */
+inline int validateConfig(const Config &cfg, const char **out, uint8_t maxOut) {
+    int n = 0;
+    auto w = [&](const char *msg) { if (n < maxOut) out[n++] = msg; };
+    if (cfg.smart_hopping && cfg.hop_min_dwell_ms >= cfg.hop_max_dwell_ms)
+        w("hop_min_dwell_ms >= hop_max_dwell_ms — max will be clamped to min+50ms");
+    if (cfg.fish_timeout_ms < 500)
+        w("fish_timeout_ms < 500 — will be clamped to 500ms");
+    if (cfg.csa_wait_ms < 1000)
+        w("csa_wait_ms < 1000 — will be clamped to 1000ms");
+    if (cfg.hop_dwell_ms == 0)
+        w("hop_dwell_ms = 0 — hopper will spin with no delay");
+    if (cfg.deauth_burst_count == 0)
+        w("deauth_burst_count = 0 — deauth attacks send zero frames");
+    if (cfg.csa_beacon_count == 0)
+        w("csa_beacon_count = 0 — CSA attacks send zero beacons");
+    if (cfg.probe_aggr_interval_s == 0)
+        w("probe_aggr_interval_s = 0 — APs attacked every beacon (very aggressive)");
+    if (cfg.min_rssi < -100 || cfg.min_rssi > -20)
+        w("min_rssi out of useful range [-100, -20] dBm");
+    return n;
+}
+
 // ─── AP Record ────────────────────────────────────────────────────────────────
 /** @brief Snapshot of a discovered Access Point from the internal cache. Populated by getAp(), getApByBssid(), and the ApFoundCb callback. */
 struct ApRecord {
@@ -171,6 +211,9 @@ struct ApRecord {
     bool     is_vht;           // 802.11ac (VHT / Wi-Fi 5) capable
     bool     is_he;            // 802.11ax (HE / Wi-Fi 6) capable
     uint8_t  chan_width;       // Max channel width: 0=20MHz 1=40MHz 2=80MHz 3=160MHz 4=80+80MHz
+    uint16_t beacon_count;     ///< Number of beacons observed from this AP in the current session
+    uint8_t  capture_count;    ///< Number of successful handshake/PMKID captures for this BSSID
+    uint32_t last_attack_ms;   ///< millis() of the most recent attack initiation (0 = never attacked)
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────
@@ -193,6 +236,11 @@ struct Stats {
 };
 
 // ─── Handshake Record ─────────────────────────────────────────────────────────
+// Pairwise cipher suite constants for HandshakeRecord.cipher
+static const uint8_t CIPHER_UNKNOWN = 0;
+static const uint8_t CIPHER_TKIP    = 1;  ///< TKIP (00-0F-AC:2) — legacy, crackable offline
+static const uint8_t CIPHER_CCMP    = 2;  ///< CCMP/AES (00-0F-AC:4) — current standard
+
 /** @brief A captured handshake or PMKID record delivered to the EapolCb callback. The @p type field identifies the capture path; fields not relevant to that path are zeroed. */
 struct HandshakeRecord {
     uint8_t  type;          // CAP_PMKID / CAP_EAPOL / ...
@@ -203,6 +251,7 @@ struct HandshakeRecord {
     char     ssid[33];
     uint8_t  ssid_len;
     uint8_t  enc;           // 0=open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
+    uint8_t  cipher;        ///< Pairwise cipher suite: CIPHER_TKIP / CIPHER_CCMP / CIPHER_UNKNOWN
     // PMKID path
     uint8_t  pmkid[16];
     // EAPOL path
@@ -251,7 +300,23 @@ struct AttackResultRecord {
 };
 
 typedef void (*AttackResultCb)(const AttackResultRecord &rec);
-typedef void (*ClientFoundCb)(const uint8_t *bssid, const uint8_t *sta, int8_t rssi);
+
+/**
+ * @brief Snapshot of a client station observed associated with an AP.
+ * Delivered to the ClientFoundCb callback and enriched with vendor lookup,
+ * timing, and MAC-randomization detection.
+ */
+struct ClientRecord {
+    uint8_t  bssid[6];        ///< BSSID of the AP this client is associated with
+    uint8_t  sta[6];          ///< Client (station) MAC address
+    int8_t   rssi;            ///< Signal strength at time of observation (dBm)
+    uint32_t first_seen_ms;   ///< millis() when this client was first seen on this BSSID
+    uint32_t last_seen_ms;    ///< millis() of the most recent frame from this client
+    bool     rand_mac;        ///< True if the locally administered bit is set (MAC randomization)
+    char     vendor[32];      ///< OUI vendor string; empty if POLITICIAN_NO_DB is defined
+};
+
+typedef void (*ClientFoundCb)(const ClientRecord &rec);
 
 /**
  * @brief Fired when a second BSSID advertising the same SSID is observed on the same channel.
@@ -299,6 +364,13 @@ typedef void (*KarmaCb)(const KarmaRecord &rec);
 #endif // POLITICIAN_NO_KARMA
 
 // ─── 802.1X Enterprise Identity Record ─────────────────────────────────────────
+// EAP method constants (RFC 3748 / RFC 5281)
+static const uint8_t EAP_METHOD_IDENTITY  = 0x01;  ///< EAP Identity (always 0x01 for harvested records)
+static const uint8_t EAP_METHOD_TLS       = 0x0D;  ///< EAP-TLS (RFC 5216) — mutual cert auth
+static const uint8_t EAP_METHOD_TTLS      = 0x15;  ///< EAP-TTLS (RFC 5281) — outer tunnel, inner MSCHAPv2
+static const uint8_t EAP_METHOD_PEAP      = 0x19;  ///< PEAP (draft-josefsson-pppext-eap-tls-eap) — outer tunnel
+static const uint8_t EAP_METHOD_MSCHAPV2  = 0x1A;  ///< Bare EAP-MSCHAPv2 (no tunnel — crackable)
+
 /** @brief A harvested 802.1X Enterprise plaintext identity, delivered to the IdentityCb callback. */
 struct EapIdentityRecord {
     uint8_t  bssid[6];      // Access Point MAC
@@ -306,6 +378,7 @@ struct EapIdentityRecord {
     char     identity[65];  // The Plaintext Identity / Email Address
     uint8_t  channel;
     int8_t   rssi;
+    uint8_t  eap_method;    ///< EAP method negotiated by the AP (EAP_METHOD_* constant); 0 if not yet observed
 };
 
 // ─── Probe Request Record ─────────────────────────────────────────────────────
