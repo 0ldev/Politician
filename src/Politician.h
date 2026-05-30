@@ -297,6 +297,7 @@ public:
     using ProbeRequestCb   = std::function<void(const ProbeRequestRecord &rec)>;
     using DisruptCb        = std::function<void(const DisruptRecord &rec)>;
     using ClientFoundCb    = std::function<void(const uint8_t *bssid, const uint8_t *sta, int8_t rssi)>;
+    using WpsCb            = std::function<void(const WpsRecord &rec)>;
 #else
     using EapolCb          = void (*)(const HandshakeRecord &rec);
     using ApFoundCb        = void (*)(const ApRecord &ap);
@@ -308,6 +309,7 @@ public:
     using ProbeRequestCb   = void (*)(const ProbeRequestRecord &rec);
     using DisruptCb        = void (*)(const DisruptRecord &rec);
     using ClientFoundCb    = void (*)(const uint8_t *bssid, const uint8_t *sta, int8_t rssi);
+    using WpsCb            = void (*)(const WpsRecord &rec);
 #endif
 
     /**
@@ -383,6 +385,14 @@ public:
     void setClientFoundCallback(ClientFoundCb cb)   { _clientFoundCb = cb; }
 
     /**
+     * @brief Sets the callback fired when a WPS Enrollee's M1 message is captured.
+     * The M1 message is the first EAP-WSC frame sent by the Enrollee and is unencrypted,
+     * revealing device attributes (name, manufacturer, model, auth/config capabilities).
+     * Only fired if the callback is set — has zero overhead otherwise.
+     */
+    void setWpsCallback(WpsCb cb)               { _wpsCb = cb; }
+
+    /**
      * @brief Sets the callback fired when a potential evil twin or rogue AP is detected.
      * Triggered when a newly observed BSSID advertises the same SSID as an already-cached AP on the same channel.
      */
@@ -421,6 +431,8 @@ private:
                      const uint8_t *eapol, uint16_t len, int8_t rssi);
     void _parseEapIdentity(const uint8_t *bssid, const uint8_t *sta,
                            const uint8_t *eapol, uint16_t len, int8_t rssi);
+    void _parseWpsFrame(const uint8_t *bssid, const uint8_t *sta,
+                        const uint8_t *eapol, uint16_t len, int8_t rssi);
     void _parseSsid(const uint8_t *ie, uint16_t ie_len, char *out, uint8_t &out_len);
     uint8_t _classifyEnc(const uint8_t *ie, uint16_t ie_len);
     bool _detectWpa3Only(const uint8_t *ie, uint16_t ie_len);
@@ -490,6 +502,7 @@ private:
     ClientFoundCb    _clientFoundCb   = nullptr;
     RogueApCb        _rogueApCb       = nullptr;
     _FpHookCb        _fpHook          = nullptr;
+    WpsCb            _wpsCb           = nullptr;
 
     const char * const * _probeWordlist    = nullptr;
     uint8_t              _probeWordlistLen  = 0;
@@ -571,6 +584,7 @@ private:
     void _randomizeMac();
     void _sendCsaBurst();
     void _sendDeauthBurst(uint8_t count, const uint8_t *sta = nullptr);
+    void _sendBtmRequest(const uint8_t *bssid, const uint8_t *sta);
     void _sendProbeRequest(const uint8_t *bssid, const char *ssid = nullptr, uint8_t ssid_len = 0);
     void _recordClientForAp(const uint8_t *bssid, const uint8_t *sta, int8_t rssi = 0);
     void _markCapturedSsidGroup(const char *ssid, uint8_t ssid_len);

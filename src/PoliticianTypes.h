@@ -30,7 +30,8 @@ namespace politician {
 #define ATTACK_PASSIVE       0x04  // Passive EAPOL capture
 #define ATTACK_DEAUTH        0x08  // Classic Reason 7 Deauthentication
 #define ATTACK_STIMULATE     0x10  // Zero-delay QoS Null Client Stimulation
-#define ATTACK_ALL           0x1F
+#define ATTACK_BTM           0x20  // 802.11v BSS Transition Management Request (polite client steering)
+#define ATTACK_ALL           0x3F
 
 // ─── Capture Filters ──────────────────────────────────────────────────────────
 // NOTE: Logging High-Frequency Intel (like Beacons) via standard SPI (SD.h) will
@@ -57,6 +58,7 @@ struct HandshakeRecord;
 struct EapIdentityRecord;
 struct ProbeRequestRecord;
 struct DisruptRecord;
+struct WpsRecord;
 
 typedef void (*ApFoundCb)(const ApRecord &ap);
 typedef int  (*TargetScoreCb)(const ApRecord &ap, const char *vendor); // Returns a priority score for autoTarget
@@ -65,6 +67,7 @@ typedef void (*EapolCb)(const HandshakeRecord &rec);
 typedef void (*IdentityCb)(const EapIdentityRecord &rec);
 typedef void (*ProbeRequestCb)(const ProbeRequestRecord &rec);
 typedef void (*DisruptCb)(const DisruptRecord &rec);
+typedef void (*WpsCb)(const WpsRecord &rec);
 
 // ─── Error Codes ──────────────────────────────────────────────────────────────
 enum Error {
@@ -111,6 +114,8 @@ struct Config {
     uint8_t  enc_filter_mask     = 0xFF; // Bitmask of enc types to cache: bit0=open,1=WEP,2=WPA,3=WPA2/3,4=Ent
     bool     require_active_clients = false; // Skip attack initiation if no active clients seen on AP
     const char* soft_ap_ssid       = nullptr; // Custom SSID for the engine's soft AP (nullptr = use default hidden AP)
+    uint8_t  btm_burst_count       = 8;    // Number of BTM Request frames per client per trigger
+    uint16_t btm_disassoc_timer    = 3;    // Disassociation Timer in TBTTs (~100ms each); 0 = immediate
 };
 
 // ─── AP Record ────────────────────────────────────────────────────────────────
@@ -275,6 +280,28 @@ struct DisruptRecord {
     uint8_t  channel;
     int8_t   rssi;
     bool     rand_mac;      // True if source MAC has locally administered bit set (randomized)
+};
+
+// ─── WPS Record ───────────────────────────────────────────────────────────────
+/**
+ * @brief WPS M1 device attributes harvested from an EAP-WSC exchange.
+ * Delivered to the WpsCb callback when a WPS Enrollee sends its M1 message.
+ * Only M1 (Enrollee → AP) is unencrypted; subsequent messages cannot be parsed passively.
+ */
+struct WpsRecord {
+    uint8_t  bssid[6];           // Access Point MAC
+    uint8_t  sta[6];             // WPS Enrollee (client) MAC
+    uint8_t  channel;
+    int8_t   rssi;
+    char     device_name[33];    // Device Name attribute (0x1011)
+    char     manufacturer[65];   // Manufacturer attribute (0x1021)
+    char     model_name[33];     // Model Name attribute (0x1023)
+    char     model_number[33];   // Model Number attribute (0x1024)
+    char     serial_number[33];  // Serial Number attribute (0x1042)
+    uint16_t auth_type_flags;    // Auth Type Flags (0x1004): bit0=Open,bit1=WPA-PSK,bit2=WPA-Ent,bit5=WPA2-PSK
+    uint16_t config_methods;     // Config Methods (0x1008): bit2=NFC,bit3=PushButton,bit6=PIN
+    uint8_t  rf_bands;           // RF Bands (0x103C): bit0=2.4GHz, bit1=5GHz
+    uint16_t primary_dev_type_cat; // Primary Device Type category (0x1054, bytes 0-1)
 };
 
 // ─── Device Fingerprint ───────────────────────────────────────────────────────
