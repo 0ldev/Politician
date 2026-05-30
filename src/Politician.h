@@ -286,6 +286,18 @@ public:
     using _FpHookCb        = void (*)(const uint8_t *mac, const char *ssid, uint8_t ssid_len, uint8_t ch, int8_t rssi, const uint8_t *ie, uint16_t ie_len);
     void _setFingerprintHook(_FpHookCb cb) { _fpHook = cb; }
 
+#ifndef POLITICIAN_NO_STD_FUNCTION
+    using EapolCb          = std::function<void(const HandshakeRecord &rec)>;
+    using ApFoundCb        = std::function<void(const ApRecord &ap)>;
+    using TargetFilterCb   = std::function<bool(const ApRecord &ap)>;
+    using TargetScoreCb    = std::function<int(const ApRecord &ap, const char *vendor)>;
+    using PacketCb         = std::function<void(const uint8_t *payload, uint16_t len, int8_t rssi, uint8_t channel, uint32_t ts_usec)>;
+    using IdentityCb       = std::function<void(const EapIdentityRecord &rec)>;
+    using AttackResultCb   = std::function<void(const AttackResultRecord &rec)>;
+    using ProbeRequestCb   = std::function<void(const ProbeRequestRecord &rec)>;
+    using DisruptCb        = std::function<void(const DisruptRecord &rec)>;
+    using ClientFoundCb    = std::function<void(const uint8_t *bssid, const uint8_t *sta, int8_t rssi)>;
+#else
     using EapolCb          = void (*)(const HandshakeRecord &rec);
     using ApFoundCb        = void (*)(const ApRecord &ap);
     using TargetFilterCb   = bool (*)(const ApRecord &ap);
@@ -296,6 +308,7 @@ public:
     using ProbeRequestCb   = void (*)(const ProbeRequestRecord &rec);
     using DisruptCb        = void (*)(const DisruptRecord &rec);
     using ClientFoundCb    = void (*)(const uint8_t *bssid, const uint8_t *sta, int8_t rssi);
+#endif
 
     /**
      * @brief Looks up the vendor name for a given MAC address (OUI).

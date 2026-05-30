@@ -88,6 +88,22 @@ void Politician::_log(const char *fmt, ...) {
 // ─── begin() ─────────────────────────────────────────────────────────────────
 Error Politician::begin(const Config &cfg) {
     _cfg = cfg;
+
+    // Validate and clamp critical config values
+    if (_cfg.smart_hopping && _cfg.hop_min_dwell_ms >= _cfg.hop_max_dwell_ms) {
+        _log("[Config] WARNING: hop_min_dwell_ms (%u) >= hop_max_dwell_ms (%u); clamping max to min+50ms\n",
+             _cfg.hop_min_dwell_ms, _cfg.hop_max_dwell_ms);
+        _cfg.hop_max_dwell_ms = _cfg.hop_min_dwell_ms + 50;
+    }
+    if (_cfg.fish_timeout_ms < 500) {
+        _log("[Config] WARNING: fish_timeout_ms (%u) < 500ms; clamping to 500ms\n", _cfg.fish_timeout_ms);
+        _cfg.fish_timeout_ms = 500;
+    }
+    if (_cfg.csa_wait_ms < 1000) {
+        _log("[Config] WARNING: csa_wait_ms (%u) < 1000ms; clamping to 1000ms\n", _cfg.csa_wait_ms);
+        _cfg.csa_wait_ms = 1000;
+    }
+
     wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
     if (esp_wifi_init(&wifi_cfg) != ESP_OK) return ERR_WIFI_INIT;
     if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) return ERR_WIFI_INIT;
@@ -95,10 +111,10 @@ Error Politician::begin(const Config &cfg) {
     if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) return ERR_WIFI_INIT;
 
     wifi_config_t ap_cfg = {};
-    const char *ap_ssid = "WiFighter";
+    const char *ap_ssid = _cfg.soft_ap_ssid ? _cfg.soft_ap_ssid : "WiFighter";
     memcpy(ap_cfg.ap.ssid, ap_ssid, strlen(ap_ssid));
     ap_cfg.ap.ssid_len        = (uint8_t)strlen(ap_ssid);
-    ap_cfg.ap.ssid_hidden     = 1;
+    ap_cfg.ap.ssid_hidden     = _cfg.soft_ap_ssid ? 0 : 1;
     ap_cfg.ap.max_connection  = 4;
     ap_cfg.ap.authmode        = WIFI_AUTH_OPEN;
     ap_cfg.ap.channel         = 1;
@@ -665,7 +681,7 @@ void Politician::_handleFrame(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuou
     _stats.total++;
     _lastRssi  = (int8_t)pkt->rx_ctrl.rssi;
     _rxChannel = pkt->rx_ctrl.channel;
-    if (_rxChannel >= 1 && _rxChannel <= 14) _stats.channel_frames[_rxChannel - 1]++;
+    if (_rxChannel > 0 && _rxChannel < 200) _stats.channel_frames[_rxChannel]++;
 
     const ieee80211_hdr_t *hdr = (const ieee80211_hdr_t *)pkt->payload;
     uint16_t fc    = hdr->frame_ctrl;

@@ -38,9 +38,12 @@ void onHandshake(const HandshakeRecord &rec) {
 
     // 3. Add to NVS cache so we don't attack it again on the next reboot
     if (nvsCache.add(rec.bssid)) {
-        Serial.println("  -> BSSID stored in NVS successfully.");
+        Serial.println("  -> BSSID queued for NVS storage (flush() will persist it).");
         // Also inform the active engine instance directly so it stops
         engine.markCaptured(rec.bssid);
+        // Flush immediately after each capture to ensure persistence on power loss.
+        // For high-volume captures, move flush() to a periodic timer instead.
+        nvsCache.flush();
     }
 }
 

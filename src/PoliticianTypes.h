@@ -2,14 +2,19 @@
 #include <stdint.h>
 #include "politician_compat.h"
 
+#ifndef POLITICIAN_NO_STD_FUNCTION
+#include <functional>
+#endif
+
 namespace politician {
 
 // ─── Compile-Time Feature Gates ──────────────────────────────────────────────
 // Define these before including Politician.h or via build flags (e.g. -DNAME)
-// #define POLITICIAN_NO_DB       // Strip 14KB OUI Database (Vendor lookups)
-// #define POLITICIAN_NO_PCAPNG   // Strip PCAPNG serialization logic
-// #define POLITICIAN_NO_HC22000  // Strip Hashcat mode 22000 formatter
-// #define POLITICIAN_NO_LOGGING  // Strip all internal Serial _log() output
+// #define POLITICIAN_NO_DB              // Strip 14KB OUI Database (Vendor lookups)
+// #define POLITICIAN_NO_PCAPNG          // Strip PCAPNG serialization logic
+// #define POLITICIAN_NO_HC22000         // Strip Hashcat mode 22000 formatter
+// #define POLITICIAN_NO_LOGGING         // Strip all internal Serial _log() output
+// #define POLITICIAN_NO_STD_FUNCTION    // Use raw fn pointers instead of std::function (saves ~2KB, no lambda captures)
 
 // ─── Capture Types ────────────────────────────────────────────────────────────
 #define CAP_PMKID           0x01  // PMKID fishing (fake association)
@@ -40,7 +45,11 @@ namespace politician {
 #define LOG_FILTER_ALL         0xFF // Everything (SDMMC ONLY!)
 
 // ─── Logging Callback ─────────────────────────────────────────────────────────
+#ifndef POLITICIAN_NO_STD_FUNCTION
+using LogCb = std::function<void(const char *msg)>;
+#else
 typedef void (*LogCb)(const char *msg);
+#endif
 
 // ─── Callbacks ────────────────────────────────────────────────────────────────
 struct ApRecord;
@@ -101,6 +110,7 @@ struct Config {
     bool     ssid_filter_exact   = true; // True = exact SSID match, false = substring match
     uint8_t  enc_filter_mask     = 0xFF; // Bitmask of enc types to cache: bit0=open,1=WEP,2=WPA,3=WPA2/3,4=Ent
     bool     require_active_clients = false; // Skip attack initiation if no active clients seen on AP
+    const char* soft_ap_ssid       = nullptr; // Custom SSID for the engine's soft AP (nullptr = use default hidden AP)
 };
 
 // ─── AP Record ────────────────────────────────────────────────────────────────
@@ -147,7 +157,7 @@ struct Stats {
     uint32_t failed_csa;        // CSA/Deauth wait expired without EAPOL
     volatile uint32_t dropped;  // Frames dropped due to ringbuffer overflow
     uint32_t rb_max;            // Max observed ringbuffer usage (bytes)
-    uint16_t channel_frames[14]; // Frames received per 2.4GHz channel (index 0 = ch1, index 13 = ch14)
+    uint16_t channel_frames[200]; // Frames received per channel, indexed by channel number (e.g. ch1=index1, ch36=index36). Index 0 unused.
 };
 
 // ─── Handshake Record ─────────────────────────────────────────────────────────
@@ -224,7 +234,11 @@ struct RogueApRecord {
     int8_t  rssi;           // Signal strength of the rogue AP (dBm)
 };
 
+#ifndef POLITICIAN_NO_STD_FUNCTION
+using RogueApCb = std::function<void(const RogueApRecord &rec)>; // Fired when an evil twin / rogue AP is detected
+#else
 typedef void (*RogueApCb)(const RogueApRecord &rec); // Fired when an evil twin / rogue AP is detected
+#endif
 
 // ─── 802.1X Enterprise Identity Record ─────────────────────────────────────────
 /** @brief A harvested 802.1X Enterprise plaintext identity, delivered to the IdentityCb callback. */
