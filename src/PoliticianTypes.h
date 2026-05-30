@@ -139,6 +139,9 @@ struct ApRecord {
     uint8_t  venue_group;      // 802.11u Venue Group (e.g., 2=Education, 10=Residential)
     uint8_t  venue_type;       // 802.11u Venue Type (e.g., 8=University, 1=Coffee Shop)
     uint8_t  network_type;     // 802.11u Access Network Type (1=Free Public, 2=Chargeable, etc.)
+    bool     is_vht;           // 802.11ac (VHT / Wi-Fi 5) capable
+    bool     is_he;            // 802.11ax (HE / Wi-Fi 6) capable
+    uint8_t  chan_width;       // Max channel width: 0=20MHz 1=40MHz 2=80MHz 3=160MHz 4=80+80MHz
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────

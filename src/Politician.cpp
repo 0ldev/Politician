@@ -482,21 +482,32 @@ void Politician::_recordClientForAp(const uint8_t *bssid, const uint8_t *sta, in
     }
 }
 
-void Politician::_sendProbeRequest(const uint8_t *bssid) {
-    uint8_t frame[36]; int p = 0;
+void Politician::_sendProbeRequest(const uint8_t *bssid, const char *ssid, uint8_t ssid_len) {
+    uint8_t frame[66]; int p = 0; // 34 fixed + 2 SSID IE overhead + 32 max SSID + 10 rates
     frame[p++] = 0x40; frame[p++] = 0x00; // FC: Probe Request
     frame[p++] = 0x00; frame[p++] = 0x00; // Duration
     memcpy(frame + p, bssid, 6); p += 6;      // DA (directed to AP)
     memcpy(frame + p, _ownStaMac, 6); p += 6; // SA
     memcpy(frame + p, bssid, 6); p += 6;      // BSSID
     frame[p++] = 0x00; frame[p++] = 0x00;     // Seq
-    frame[p++] = 0x00; frame[p++] = 0x00;     // SSID IE: wildcard (empty)
+    frame[p++] = 0x00;                        // SSID IE tag
+    if (ssid && ssid_len > 0) {
+        if (ssid_len > 32) ssid_len = 32;
+        frame[p++] = ssid_len;
+        memcpy(frame + p, ssid, ssid_len); p += ssid_len;
+    } else {
+        frame[p++] = 0x00;                    // wildcard (empty SSID)
+    }
     frame[p++] = 0x01; frame[p++] = 0x08;     // Supported Rates IE
     frame[p++] = 0x82; frame[p++] = 0x84; frame[p++] = 0x8b; frame[p++] = 0x96;
     frame[p++] = 0x0c; frame[p++] = 0x12; frame[p++] = 0x18; frame[p++] = 0x24;
     esp_wifi_80211_tx(WIFI_IF_STA, frame, p, false);
-    _log("[Probe] Directed probe to hidden AP %02X:%02X:%02X:%02X:%02X:%02X\n",
-        bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+    if (ssid && ssid_len > 0)
+        _log("[Probe] Wordlist probe '%.*s' -> %02X:%02X:%02X:%02X:%02X:%02X\n",
+            ssid_len, ssid, bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+    else
+        _log("[Probe] Wildcard probe -> %02X:%02X:%02X:%02X:%02X:%02X\n",
+            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
 }
 
 // ─── tick() ───────────────────────────────────────────────────────────────────
@@ -915,7 +926,50 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             }
         }
 
-        // Fire apFoundCb only once min_beacon_count is satisfied
+        // VHT/HE capability parsing (IEs 45, 191, 192, 255+ext35)
+        {
+            bool    is_vht    = false;
+            bool    is_he     = false;
+            uint8_t chan_width = 0; // default: 20MHz (pre-HT)
+            uint16_t pos = 0;
+            while (pos + 2 <= ie_len) {
+                uint8_t tag  = ie[pos];
+                uint8_t tlen = ie[pos + 1];
+                if (pos + 2 + tlen > ie_len) break;
+                if (tag == 45 && tlen >= 2) {
+                    // HT Capabilities: bit 1 of byte 0 = 40MHz supported
+                    if ((ie[pos + 2] & 0x02) && chan_width < 1) chan_width = 1;
+                } else if (tag == 191 && tlen >= 4) {
+                    // VHT Capabilities IE: bits 2-3 of byte 0 = Supported Channel Width Set
+                    is_vht = true;
+                    if (chan_width < 2) chan_width = 2; // VHT minimum is 80MHz
+                    uint8_t sup_cw = (ie[pos + 2] >> 2) & 0x03;
+                    if (sup_cw == 1 && chan_width < 3)      chan_width = 3; // 160MHz
+                    else if (sup_cw == 2 && chan_width < 4) chan_width = 4; // 80+80MHz
+                } else if (tag == 192 && tlen >= 3) {
+                    // VHT Operation IE: byte 0 = Channel Width field
+                    if (!is_vht) is_vht = true;
+                    uint8_t vht_op_cw = ie[pos + 2];
+                    if (vht_op_cw == 1 && chan_width < 2) chan_width = 2; // 80MHz
+                    else if (vht_op_cw == 2 && chan_width < 3) chan_width = 3; // 160MHz
+                    else if (vht_op_cw == 3 && chan_width < 4) chan_width = 4; // 80+80MHz
+                } else if (tag == 255 && tlen >= 1 && ie[pos + 2] == 35) {
+                    // Extended Element: ext ID 35 = HE Capabilities
+                    is_he = true;
+                }
+                pos += 2 + tlen;
+            }
+            ap.is_vht    = is_vht;
+            ap.is_he     = is_he;
+            ap.chan_width = chan_width;
+            if (entry) {
+                entry->flags.is_vht = is_vht;
+                entry->flags.is_he  = is_he;
+                entry->chan_width    = chan_width;
+            }
+        }
+
+
         if (_apFoundCb) {
             bool threshold_ok = true;
             if (_cfg.min_beacon_count > 0 && entry) {
@@ -924,11 +978,17 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             if (threshold_ok) _apFoundCb(ap);
         }
 
-        // Execute active probing for hidden networks
+        // Execute active probing for hidden networks (wildcard or wordlist)
         if (ap.ssid_len == 0 && _cfg.probe_hidden_interval_ms > 0) {
             if (entry && (millis() - entry->last_hidden_probe_ms >= _cfg.probe_hidden_interval_ms)) {
                 entry->last_hidden_probe_ms = millis();
-                _sendProbeRequest(ap.bssid);
+                if (_probeWordlist && _probeWordlistLen > 0) {
+                    const char *w = _probeWordlist[entry->probe_word_idx % _probeWordlistLen];
+                    entry->probe_word_idx++;
+                    _sendProbeRequest(ap.bssid, w, (uint8_t)strnlen(w, 32));
+                } else {
+                    _sendProbeRequest(ap.bssid);
+                }
             }
         }
 
@@ -1689,7 +1749,11 @@ Politician::ApCacheEntry* Politician::_cacheAp(const uint8_t *bssid, const char 
     _apCache[slot].known_sta_count = 0;
     _apCache[slot].beacon_count = 1;
     _apCache[slot].total_attempts = 0;
+    _apCache[slot].chan_width = 0;
+    _apCache[slot].probe_word_idx = 0;
+    _apCache[slot].flags.is_vht    = false;
     _apCache[slot].flags.is_hidden = (ssid_len == 0);
+    _apCache[slot].flags.is_he     = false;
     _apCache[slot].flags.wps_enabled   = wps;
     _apCache[slot].flags.pmf_capable   = pmf_capable;
     _apCache[slot].flags.pmf_required  = pmf_required;
@@ -1773,6 +1837,9 @@ bool Politician::getAp(int idx, ApRecord &out) const {
             out.venue_group     = _apCache[i].venue_group;
             out.venue_type      = _apCache[i].venue_type;
             out.network_type    = _apCache[i].network_type;
+            out.is_vht          = _apCache[i].flags.is_vht;
+            out.is_he           = _apCache[i].flags.is_he;
+            out.chan_width       = _apCache[i].chan_width;
             ok = true; break;
         }
         found++;
@@ -1809,6 +1876,9 @@ bool Politician::getApByBssid(const uint8_t *bssid, ApRecord &out) const {
         out.venue_group     = _apCache[i].venue_group;
         out.venue_type      = _apCache[i].venue_type;
         out.network_type    = _apCache[i].network_type;
+        out.is_vht          = _apCache[i].flags.is_vht;
+        out.is_he           = _apCache[i].flags.is_he;
+        out.chan_width       = _apCache[i].chan_width;
         ok = true; break;
     }
     xSemaphoreGiveRecursive(_lock);

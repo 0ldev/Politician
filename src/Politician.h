@@ -388,6 +388,23 @@ public:
      */
     void setRogueApCallback(RogueApCb cb)           { _rogueApCb = cb; }
 
+    /**
+     * @brief Sets an SSID wordlist for directed probes against hidden access points.
+     * When set and probe_hidden_interval_ms > 0, the engine cycles through each SSID
+     * per hidden AP instead of sending a wildcard probe. Each hidden AP maintains its
+     * own position in the wordlist so no word is skipped.
+     *
+     * The array must remain valid for the lifetime of the engine (use PROGMEM / static storage).
+     * Pass nullptr to revert to wildcard-only probing.
+     *
+     * @param wordlist  Array of null-terminated SSID strings (max 32 chars each)
+     * @param count     Number of entries in the array
+     */
+    void setProbeWordlist(const char * const *wordlist, uint8_t count) {
+        _probeWordlist    = wordlist;
+        _probeWordlistLen = count;
+    }
+
 private:
     static void IRAM_ATTR _promiscuousCb(void *buf, wifi_promiscuous_pkt_type_t type);
     static void _workerTask(void *pvParameters);
@@ -474,6 +491,9 @@ private:
     RogueApCb        _rogueApCb       = nullptr;
     _FpHookCb        _fpHook          = nullptr;
 
+    const char * const * _probeWordlist    = nullptr;
+    uint8_t              _probeWordlistLen  = 0;
+
     void _log(const char *fmt, ...);
 
     static const int MAX_IGNORE = 128;
@@ -506,15 +526,19 @@ private:
         uint8_t  venue_type;            // 802.11u Venue Type
         uint8_t  network_type;          // 802.11u Access Network Type
         struct {
-            uint8_t active             : 1;
-            uint8_t has_active_clients : 1;
-            uint8_t is_wpa3_only       : 1;
-            uint8_t is_hidden          : 1;
-            uint8_t wps_enabled        : 1;
-            uint8_t pmf_capable        : 1;
-            uint8_t pmf_required       : 1;
-            uint8_t ft_capable         : 1;
+            uint16_t active             : 1;
+            uint16_t has_active_clients : 1;
+            uint16_t is_wpa3_only       : 1;
+            uint16_t is_hidden          : 1;
+            uint16_t wps_enabled        : 1;
+            uint16_t pmf_capable        : 1;
+            uint16_t pmf_required       : 1;
+            uint16_t ft_capable         : 1;
+            uint16_t is_vht             : 1;  // 802.11ac capable
+            uint16_t is_he              : 1;  // 802.11ax capable
         } flags;
+        uint8_t  chan_width;            // Max channel width: 0=20 1=40 2=80 3=160 4=80+80 (MHz)
+        uint8_t  probe_word_idx;        // Next wordlist index to probe for this hidden AP
     };
     ApCacheEntry _apCache[MAX_AP_CACHE];
 
@@ -547,7 +571,7 @@ private:
     void _randomizeMac();
     void _sendCsaBurst();
     void _sendDeauthBurst(uint8_t count, const uint8_t *sta = nullptr);
-    void _sendProbeRequest(const uint8_t *bssid);
+    void _sendProbeRequest(const uint8_t *bssid, const char *ssid = nullptr, uint8_t ssid_len = 0);
     void _recordClientForAp(const uint8_t *bssid, const uint8_t *sta, int8_t rssi = 0);
     void _markCapturedSsidGroup(const char *ssid, uint8_t ssid_len);
     void _markCaptured(const uint8_t *bssid);
