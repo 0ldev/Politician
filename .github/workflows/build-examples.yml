@@ -26,6 +26,9 @@ jobs:
           - StressTest
           - TargetedAuditing
           - WigleIntegration
+          - BtmSteering
+          - MsChapCapture
+          - WpsCapture
 
     steps:
       - name: Checkout repository
@@ -43,7 +46,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('examples/${{ matrix.example }}/platformio.ini') }}
+          key: pio-${{ runner.os }}-${{ hashFiles('**/platformio.ini') }}
           restore-keys: pio-${{ runner.os }}-
 
       - name: Build ${{ matrix.example }}

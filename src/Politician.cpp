@@ -972,6 +972,15 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             }
         }
 
+        // HE (Wi-Fi 6) and VHT + PMF-Required: management frames are MIC-protected;
+        // deauth and CSA injections will be dropped by the client. Skip those attacks
+        // and go straight to PMKID fishing + BTM steering.
+        if (pmf_required && (ap.is_he || ap.is_vht)) {
+            effMask &= ~(uint8_t)(ATTACK_CSA | ATTACK_DEAUTH);
+            _log("[Attack] PMF+%s on %02X:%02X:%02X:%02X:%02X:%02X — DEAUTH/CSA suppressed\n",
+                ap.is_he ? "HE" : "VHT",
+                ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5]);
+        }
 
         if (_apFoundCb) {
             bool threshold_ok = true;
@@ -1038,9 +1047,14 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                     if (_cfg.min_beacon_count > 0 && _apCache[i].beacon_count < _cfg.min_beacon_count) break;
                     if (_cfg.require_active_clients && !_apCache[i].flags.has_active_clients) break;
 
-                    uint32_t throttle_ms = _hasTarget ? 0u
+                    // Exponential backoff: double the window per failed attempt, cap at 8 minutes
+                    uint32_t base_ms = _hasTarget ? 0u
                         : _apCache[i].flags.has_active_clients ? 15000u
                         : (uint32_t)_cfg.probe_aggr_interval_s * 1000u;
+                    uint8_t  att = _apCache[i].total_attempts;
+                    uint32_t throttle_ms = (base_ms == 0u) ? 0u
+                        : (uint32_t)((uint64_t)base_ms << (att < 4u ? att : 4u));
+                    if (throttle_ms > 480000u) throttle_ms = 480000u;
                     uint32_t elapsed = millis() - _apCache[i].last_probe_ms;
                     if (elapsed >= throttle_ms) {
                         _apCache[i].last_probe_ms = millis();
@@ -2322,7 +2336,23 @@ void Politician::_processFishing() {
             _fishRetry++; _log("[Fish] Timeout retry %d\n", _fishRetry); _randomizeMac();
             _probeLockEndMs = millis() + _cfg.fish_timeout_ms; _fishAuthLogged = false; _fishAssocLogged = false; esp_wifi_connect(); return;
         }
-        if (_attackMask & ATTACK_CSA) {
+        bool do_csa = !!(_attackMask & ATTACK_CSA);
+        if (do_csa) {
+            // Skip CSA fallback for HE/VHT networks with PMF required — the client will
+            // discard the injected CSA beacon (MIC-protected management frame).
+            for (int i = 0; i < MAX_AP_CACHE; i++) {
+                if (_apCache[i].flags.active && memcmp(_apCache[i].bssid, _fishBssid, 6) == 0) {
+                    if (_apCache[i].flags.pmf_required &&
+                        (_apCache[i].flags.is_he || _apCache[i].flags.is_vht)) {
+                        _log("[Attack] PMF+%s — CSA fallback skipped\n",
+                             _apCache[i].flags.is_he ? "HE" : "VHT");
+                        do_csa = false;
+                    }
+                    break;
+                }
+            }
+        }
+        if (do_csa) {
             _log("[Attack] Switching to CSA\n"); esp_wifi_set_channel(_fishChannel, WIFI_SECOND_CHAN_NONE);
             memset(_fishSta, 0, 6); // No known STA from PMKID path
             _csaFallbackMs = 0;
