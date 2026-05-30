@@ -298,6 +298,9 @@ public:
     using DisruptCb        = std::function<void(const DisruptRecord &rec)>;
     using ClientFoundCb    = std::function<void(const uint8_t *bssid, const uint8_t *sta, int8_t rssi)>;
     using WpsCb            = std::function<void(const WpsRecord &rec)>;
+#ifndef POLITICIAN_NO_MSCHAPV2
+    using MsChapCb         = std::function<void(const MsChapRecord &rec)>;
+#endif
 #else
     using EapolCb          = void (*)(const HandshakeRecord &rec);
     using ApFoundCb        = void (*)(const ApRecord &ap);
@@ -310,6 +313,9 @@ public:
     using DisruptCb        = void (*)(const DisruptRecord &rec);
     using ClientFoundCb    = void (*)(const uint8_t *bssid, const uint8_t *sta, int8_t rssi);
     using WpsCb            = void (*)(const WpsRecord &rec);
+#ifndef POLITICIAN_NO_MSCHAPV2
+    using MsChapCb         = void (*)(const MsChapRecord &rec);
+#endif
 #endif
 
     /**
@@ -392,6 +398,16 @@ public:
      */
     void setWpsCallback(WpsCb cb)               { _wpsCb = cb; }
 
+#ifndef POLITICIAN_NO_MSCHAPV2
+    /**
+     * @brief Sets the callback fired on a bare EAP-MSCHAPv2 challenge/response exchange.
+     * Only fires when an AP serves MSCHAPv2 directly without a TLS tunnel (no PEAP/TTLS).
+     * The captured MsChapRecord contains everything needed for offline cracking with
+     * asleap or hashcat mode 5500. Zero overhead if not set.
+     */
+    void setMsChapCallback(MsChapCb cb)         { _msChapCb = cb; }
+#endif
+
     /**
      * @brief Sets the callback fired when a potential evil twin or rogue AP is detected.
      * Triggered when a newly observed BSSID advertises the same SSID as an already-cached AP on the same channel.
@@ -433,6 +449,10 @@ private:
                            const uint8_t *eapol, uint16_t len, int8_t rssi);
     void _parseWpsFrame(const uint8_t *bssid, const uint8_t *sta,
                         const uint8_t *eapol, uint16_t len, int8_t rssi);
+#ifndef POLITICIAN_NO_MSCHAPV2
+    void _parseEapMsChap(const uint8_t *bssid, const uint8_t *sta,
+                         const uint8_t *eapol, uint16_t len, int8_t rssi);
+#endif
     void _parseSsid(const uint8_t *ie, uint16_t ie_len, char *out, uint8_t &out_len);
     uint8_t _classifyEnc(const uint8_t *ie, uint16_t ie_len);
     bool _detectWpa3Only(const uint8_t *ie, uint16_t ie_len);
@@ -503,6 +523,18 @@ private:
     RogueApCb        _rogueApCb       = nullptr;
     _FpHookCb        _fpHook          = nullptr;
     WpsCb            _wpsCb           = nullptr;
+#ifndef POLITICIAN_NO_MSCHAPV2
+    MsChapCb         _msChapCb        = nullptr;
+    // Challenge session table: correlates server challenge (from AP) with response (from client)
+    static const int MAX_MSCHAP_SESSIONS = 4;
+    struct MsChapSession {
+        bool    active;
+        uint8_t bssid[6];
+        uint8_t ms_id;           // MS-CHAPv2 identifier — ties challenge to response
+        uint8_t challenge[16];   // Server challenge from MSCHAPv2 Challenge frame
+    };
+    MsChapSession _msChapSessions[MAX_MSCHAP_SESSIONS];
+#endif
 
     const char * const * _probeWordlist    = nullptr;
     uint8_t              _probeWordlistLen  = 0;

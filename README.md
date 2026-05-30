@@ -9,54 +9,73 @@ Politician is an embedded C++ library designed for WiFi security auditing on ESP
 
 ## Key Capabilities
 
-- **PMKID Capture**: Extract PMKIDs from association responses without client disconnection
-- **CSA (Channel Switch Announcement) Injection**: Modern alternative to deauthentication attacks
-- **Enterprise Credential Harvesting**: Capture EAP-Identity frames from 802.1X networks  
-- **Hidden Network Discovery**: Automatic SSID decloaking via probe response interception
-- **Device Fingerprinting**: Passively identify 150+ consumer IoT/smart home brands via MAC OUI and IE signatures without network association
-- **Client Stimulation**: Wake sleeping mobile devices using QoS Null Data frames
-- **WPA3/PMF Detection**: Intelligent filtering to skip Protected Management Frame-enabled networks
-- **Export Formats**: PCAPNG capture files; optional HC22000 text export for direct Hashcat ingestion
+- **PMKID Capture** — Extract PMKIDs via fake association without disconnecting any client
+- **CSA Injection** — Channel Switch Announcement; modern PMF-bypassing alternative to deauth
+- **802.11v BTM Injection** — BSS Transition Management Request; politely steers clients to reconnect
+- **Classic Deauth** — Reason-7 deauthentication for legacy networks without PMF
+- **Client Stimulation** — Wake sleeping devices with QoS Null Data frames
+- **Enterprise Credential Harvesting** — Passively capture EAP-Identity and bare EAP-MSCHAPv2 exchanges
+- **WPS M1 Capture** — Harvest device fingerprint attributes from unencrypted WPS Enrollee M1 messages
+- **Hidden Network Discovery** — SSID decloaking via directed probe requests; optional wordlist cycling
+- **VHT/HE Detection** — Parse 802.11ac/ax IEs to expose channel width and Wi-Fi generation per AP
+- **Device Fingerprinting** — Identify 150+ IoT/consumer brands via MAC OUI and IE signatures
+- **Export Formats** — Streaming PCAPNG (Wireshark-compatible); auxiliary HC22000 for Hashcat; Wigle CSV
 
 ## Architecture
 
-The library is built around a non-blocking state machine that manages channel hopping, target selection, attack execution, and capture processing. All operations are contained within the `politician` namespace.
+The library is built around a non-blocking state machine managing channel hopping, target selection, attack execution, and capture processing. All operations are contained within the `politician` namespace.
 
-### Core Components
+### Core Headers
 
-| Component | Description |
-|-----------|-------------|
-| `Politician` | Main engine class managing the audit lifecycle |
-| `PoliticianFormat` | PCAPNG capture serialization; auxiliary HC22000 text export |
-| `PoliticianStorage` | Optional SD card logging and NVS persistence |
-| `PoliticianStress` | Decoupled DoS/disruption payload delivery (opt-in) |
-| `PoliticianTypes` | Core data structures and enumerations |
+| Header | Description |
+|--------|-------------|
+| `Politician.h` | Main engine class — include this in every project |
+| `PoliticianTypes.h` | Public structs, enums, and compile-time feature gates |
+| `PoliticianStorage.h` | SD card loggers and NVS persistence (Arduino only) |
+| `PoliticianFormat.h` | PCAPNG and HC22000 serialization primitives |
+| `PoliticianStress.h` | Opt-in DoS payloads (SAE flood, probe flood) |
+| `PoliticianProbe.h` | Opt-in PROGMEM wordlist for hidden SSID probing |
+| `PoliticianWPS.h` | Opt-in WPS M1 print helpers and bitmask constants |
 
 ### Attack Modes
 
-Traditional deauthentication attacks are ineffective against modern WPA3 and WPA2 networks with Protected Management Frames (PMF/802.11w). Politician implements modern alternatives:
+| Mode | Bit | Description |
+|------|-----|-------------|
+| `ATTACK_PMKID` | `0x01` | PMKID fishing via fake association |
+| `ATTACK_CSA` | `0x02` | Channel Switch Announcement injection |
+| `ATTACK_PASSIVE` | `0x04` | Listen-only — zero transmission |
+| `ATTACK_DEAUTH` | `0x08` | Classic Reason-7 deauthentication |
+| `ATTACK_STIMULATE` | `0x10` | QoS Null Data client stimulation |
+| `ATTACK_BTM` | `0x20` | 802.11v BSS Transition Management Request |
+| `ATTACK_ALL` | `0x3F` | All active attack vectors |
 
-| Mode | Description | Effectiveness |
-|------|-------------|---------------|
-| `ATTACK_PMKID` | Extract PMKID via dummy authentication | Works on all WPA2/WPA3-Transition |
-| `ATTACK_CSA` | Channel Switch Announcement injection | Bypasses PMF protections |
-| `ATTACK_DEAUTH` | Legacy deauthentication (Reason 7) | WPA2 without PMF only |
-| `ATTACK_STIMULATE` | QoS Null Data for sleeping clients | Non-intrusive client wake-up |
-| `ATTACK_PASSIVE` | Listen-only mode | Zero transmission |
-| `ATTACK_ALL` | Enable all active attack vectors | Maximum aggression |
+## Compile-Time Feature Gates
+
+Define any of these **before** including `Politician.h` or via your build system (`-DNAME`):
+
+```ini
+; platformio.ini
+build_flags =
+    -DPOLITICIAN_NO_DB           ; Strip 14KB OUI database (no vendor lookups)
+    -DPOLITICIAN_NO_PCAPNG       ; Strip PCAPNG serialization
+    -DPOLITICIAN_NO_HC22000      ; Strip Hashcat HC22000 formatter
+    -DPOLITICIAN_NO_LOGGING      ; Strip all internal Serial log output
+    -DPOLITICIAN_NO_STD_FUNCTION ; Use raw fn pointers instead of std::function
+    -DPOLITICIAN_NO_MSCHAPV2     ; Strip bare EAP-MSCHAPv2 capture
+```
+
+`POLITICIAN_NO_STD_FUNCTION` reverts all callback types from `std::function<>` to raw function pointers — saving ~2KB flash and enabling use in environments without `<functional>`. Lambda captures are unavailable when this flag is set.
 
 ## Installation
 
 ### PlatformIO
-
-Add to your `platformio.ini`:
 
 ```ini
 [env:myboard]
 platform = espressif32
 board = esp32dev
 framework = arduino
-lib_deps = 
+lib_deps =
     Politician
 ```
 
@@ -70,31 +89,20 @@ git clone https://github.com/0ldev/Politician.git
 ### Arduino IDE
 
 1. Download the library as a ZIP file
-2. In Arduino IDE: **Sketch** → **Include Library** → **Add .ZIP Library**
-3. Select the downloaded ZIP file
+2. **Sketch** → **Include Library** → **Add .ZIP Library**
 
 ### ESP-IDF
 
-Clone the repository into your project's `components/` directory:
-
-```bash
-cd components/
-git clone https://github.com/0ldev/Politician.git
-```
-
-Create a `components/Politician/CMakeLists.txt` component descriptor:
+Clone into your project's `components/` directory and create a `CMakeLists.txt`:
 
 ```cmake
 idf_component_register(
-    SRCS
-        "src/Politician.cpp"
-        "src/PoliticianFormat.cpp"
-        "src/PoliticianStress.cpp"
+    SRCS "src/Politician.cpp" "src/PoliticianFormat.cpp" "src/PoliticianStress.cpp"
     INCLUDE_DIRS "src"
 )
 ```
 
-`PoliticianStorage.h` is not available under ESP-IDF — it emits a `#error` at compile time if included outside Arduino. Use ESP-IDF's VFS and `nvs_flash` APIs directly for any persistence you need.
+> `PoliticianStorage.h` is Arduino-only and emits a `#error` under ESP-IDF. Use ESP-IDF's VFS and `nvs_flash` APIs directly.
 
 ## Quick Start
 
@@ -110,22 +118,22 @@ using namespace politician;
 using namespace politician::storage;
 
 Politician engine;
+PcapngFileLogger pcap; // Streaming logger — one open(), many write() calls
 
 void onHandshake(const HandshakeRecord &rec) {
-    Serial.printf("\n[✓] Captured: %s  ch%d  rssi=%d  type=%d\n",
+    Serial.printf("[✓] %s  ch%d  rssi=%d  type=%d\n",
                   rec.ssid, rec.channel, rec.rssi, rec.type);
-    // Primary output: PCAPNG — open in Wireshark or convert with hcxpcapngtool
-    PcapngFileLogger::append(SD, "/captures.pcapng", rec);
+    pcap.write(rec);
 }
 
 void setup() {
     Serial.begin(115200);
     SD.begin();
 
-    engine.setEapolCallback(onHandshake);
+    pcap.open(SD, "/captures.pcapng"); // file stays open for the session
 
-    Config cfg;
-    engine.begin(cfg);
+    engine.setEapolCallback(onHandshake);
+    engine.begin();
     engine.setAttackMask(ATTACK_ALL);
 }
 
@@ -136,720 +144,681 @@ void loop() {
 
 ### Bare ESP-IDF Quick Start
 
-Under ESP-IDF, `begin()` calls `esp_wifi_init()` internally but expects NVS and the default event loop to already be initialized. Call those before `begin()`, then drive the engine from a FreeRTOS task.
-
 ```cpp
 #include <nvs_flash.h>
 #include <esp_event.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 #include <Politician.h>
 
 using namespace politician;
-
 static Politician engine;
 
-static void on_handshake(const HandshakeRecord &rec) {
-    printf("[+] Captured: %s  ch%d  rssi=%d  type=%d\n",
-           rec.ssid, rec.channel, rec.rssi, rec.type);
-}
-
 static void audit_task(void *) {
-    Config cfg;
-    engine.setEapolCallback(on_handshake);
-
-    if (engine.begin(cfg) != OK) {
-        printf("[!] WiFi init failed\n");
-        vTaskDelete(nullptr);
-        return;
-    }
-
+    engine.setEapolCallback([](const HandshakeRecord &rec) {
+        printf("[+] %s  ch%d\n", rec.ssid, rec.channel);
+    });
+    engine.begin();
     engine.setAttackMask(ATTACK_ALL);
-
-    for (;;) {
-        engine.tick();
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
+    for (;;) { engine.tick(); vTaskDelay(pdMS_TO_TICKS(1)); }
 }
 
 extern "C" void app_main(void) {
     nvs_flash_init();
     esp_event_loop_create_default();
-
     xTaskCreate(audit_task, "politician", 8192, nullptr, 5, nullptr);
 }
 ```
 
 ## API Reference
 
-### Politician Class
-
-The main engine class. Must call `tick()` in your main loop.
-
-#### Initialization
+### Initialization
 
 ```cpp
-Error begin(const Config& cfg = Config());
+Error begin(const Config &cfg = Config());
 ```
 
-Initialize the engine. Returns `OK` on success or an `Error` code on failure. Must be called before any other method.
+Initializes the WiFi driver in promiscuous mode. Must be called before any other method. Clamps and warns on invalid Config values at startup.
 
-#### Configuration Structure
+### Configuration
 
 ```cpp
 struct Config {
-    uint16_t hop_dwell_ms           = 200;   // Static time spent on each channel (ms)
-    bool     smart_hopping          = true;  // Dynamic channel dwell time based on traffic
-    uint16_t hop_min_dwell_ms       = 50;    // Minimum dwell if no traffic is seen
-    uint16_t hop_max_dwell_ms       = 400;   // Maximum dwell if traffic is active
-    uint32_t m1_lock_ms             = 800;   // How long to stay on channel after seeing M1
-    uint32_t fish_timeout_ms        = 2000;  // Timeout per PMKID association attempt
-    uint8_t  fish_max_retries       = 2;     // PMKID retries before pivoting to CSA
-    uint32_t csa_wait_ms            = 4000;  // Wait window after CSA/Deauth burst
-    uint8_t  csa_beacon_count       = 8;     // Number of CSA beacons per burst
-    uint8_t  deauth_burst_count     = 16;    // Frames per standalone deauth burst
-    uint8_t  csa_deauth_count       = 15;    // Deauth frames appended after CSA burst
-    uint16_t probe_aggr_interval_s  = 30;    // Seconds between re-attacking the same AP
-    uint32_t session_timeout_ms     = 60000; // How long orphaned sessions live in RAM
-    bool     capture_half_handshakes = false; // Fire callback on M2-only captures and pivot to active attack
-    bool     skip_immune_networks   = true;  // Skip pure WPA3 / PMF-Required networks
-    uint8_t  capture_filter         = LOG_FILTER_HANDSHAKES | LOG_FILTER_PROBES;
-    int8_t   min_rssi               = -100;  // Ignore APs weaker than this signal (dBm)
-    uint32_t ap_expiry_ms           = 300000; // Evict APs not seen for this long (0 = never expire)
-    bool     unicast_deauth         = true;  // Send deauth to known client MAC instead of broadcast
-    uint32_t probe_hidden_interval_ms = 0;   // How often to probe hidden APs for SSID (0 = disabled, opt-in)
-    uint8_t  deauth_reason          = 7;     // 802.11 reason code in deauth frames
-    bool     deauth_reason_cycling  = true;  // Cycle through effective reason codes (fuzzing)
-    // ── Frame capture
-    bool     capture_group_keys     = false; // Fire eapolCb(CAP_EAPOL_GROUP) on GTK rotation frames
-    // ── Filtering
-    uint8_t  min_beacon_count       = 0;     // Min times AP must be seen before attack/apFoundCb (0 = off)
-    uint8_t  max_total_attempts     = 0;     // Permanently skip BSSID after N failed attacks (0 = unlimited)
-    uint8_t  sta_filter[6]          = {};    // Only record EAPOL from this client MAC (zero = no filter)
-    char     ssid_filter[33]        = {};    // Only cache APs matching this SSID (empty = no filter)
-    bool     ssid_filter_exact      = true;  // True = exact match, false = substring match
-    uint8_t  enc_filter_mask        = 0xFF;  // Bitmask of enc types to cache
-    bool     require_active_clients = false; // Skip attack initiation if no active clients seen on AP
+    // ── Channel Hopping ──────────────────────────────────────────────────────
+    uint16_t hop_dwell_ms             = 200;    // Static dwell time per channel (ms)
+    bool     smart_hopping            = true;   // Dynamic dwell based on traffic activity
+    uint16_t hop_min_dwell_ms         = 50;     // Minimum dwell (smart hopping floor)
+    uint16_t hop_max_dwell_ms         = 400;    // Maximum dwell (smart hopping ceiling)
+    uint32_t m1_lock_ms               = 800;    // Stay on channel after seeing M1 (ms)
+
+    // ── PMKID Fishing ────────────────────────────────────────────────────────
+    uint32_t fish_timeout_ms          = 2000;   // Timeout per PMKID association attempt
+    uint8_t  fish_max_retries         = 2;      // PMKID retries before pivoting to CSA
+
+    // ── CSA / Deauth ─────────────────────────────────────────────────────────
+    uint32_t csa_wait_ms              = 4000;   // Wait window after CSA/Deauth burst (ms)
+    uint8_t  csa_beacon_count         = 8;      // CSA beacon frames per burst
+    uint8_t  csa_deauth_count         = 15;     // Deauth frames appended to CSA burst
+    uint8_t  deauth_burst_count       = 16;     // Frames per standalone deauth burst
+    uint8_t  deauth_reason            = 7;      // 802.11 reason code in deauth frames
+    bool     deauth_reason_cycling    = true;   // Cycle reason codes during burst (fuzzing)
+
+    // ── 802.11v BTM ──────────────────────────────────────────────────────────
+    uint8_t  btm_burst_count          = 8;      // BTM Request frames per client per trigger
+    uint16_t btm_disassoc_timer       = 3;      // Disassociation Timer in TBTTs (~300ms)
+
+    // ── Timing & Intervals ───────────────────────────────────────────────────
+    uint16_t probe_aggr_interval_s    = 30;     // Seconds between re-attacking the same AP
+    uint32_t session_timeout_ms       = 60000;  // Orphaned handshake session lifetime (ms)
+    uint32_t ap_expiry_ms             = 300000; // Evict APs not seen for this long (0=never)
+    uint32_t probe_hidden_interval_ms = 0;      // Probe hidden APs every N ms (0=disabled)
+
+    // ── Capture & Logging ────────────────────────────────────────────────────
+    uint8_t  capture_filter           = LOG_FILTER_HANDSHAKES | LOG_FILTER_PROBES;
+    bool     capture_half_handshakes  = false;  // Fire callback on M2-only; pivot to active
+    bool     capture_group_keys       = false;  // Fire eapolCb on GTK rotation frames
+
+    // ── Filtering ────────────────────────────────────────────────────────────
+    int8_t   min_rssi                 = -100;   // Ignore APs weaker than this (dBm)
+    uint8_t  min_beacon_count         = 0;      // Min beacons before attack/callback (0=off)
+    uint8_t  max_total_attempts       = 0;      // Permanently skip after N failures (0=∞)
+    bool     skip_immune_networks     = true;   // Skip pure WPA3 / PMF-Required APs
+    bool     require_active_clients   = false;  // Skip attack if no clients seen on AP
+    bool     unicast_deauth           = true;   // Deauth known client MAC, not broadcast
+    uint8_t  sta_filter[6]            = {};     // Only record EAPOL from this client (0=any)
+    char     ssid_filter[33]          = {};     // Only cache APs matching this SSID (empty=any)
+    bool     ssid_filter_exact        = true;   // true=exact, false=substring SSID match
+    uint8_t  enc_filter_mask          = 0xFF;   // Enc types to cache (bit0=open … bit4=Ent)
+
+    // ── Soft AP ──────────────────────────────────────────────────────────────
+    const char* soft_ap_ssid          = nullptr; // AP SSID (nullptr=hidden "WiFighter")
 };
 ```
 
-### Advanced Features
+### Callbacks
 
-#### Autonomous Hunter (Fingerprint-Aware Targeting)
-
-Prioritize specific device vendors during `autoTarget` using the built-in OUI database:
+Register any subset — unregistered callbacks have zero overhead.
 
 ```cpp
-// 1. Define your targeting policy
-int hunterScore(const ApRecord &ap, const char *vendor) {
-    int score = ap.rssi; // Start with signal strength
-    
-    // Prioritize high-value targets
-    if (strstr(vendor, "Apple"))   score += 50;
-    if (strstr(vendor, "Hikvision")) score += 80; // Security Cameras
-    
-    // Ignore uninteresting noise
-    if (ap.flags.is_hidden) score -= 100;
-    
-    return score;
-}
+void setEapolCallback(EapolCb cb);           // Handshake captured (EAPOL, PMKID, group key)
+void setApFoundCallback(ApFoundCb cb);       // New AP discovered (after min_beacon_count)
+void setIdentityCallback(IdentityCb cb);     // EAP-Identity plaintext harvested
+void setWpsCallback(WpsCb cb);               // WPS M1 device attributes captured
+void setMsChapCallback(MsChapCb cb);         // Bare EAP-MSCHAPv2 challenge/response (#ifndef POLITICIAN_NO_MSCHAPV2)
+void setClientFoundCallback(ClientFoundCb cb); // New STA seen on an AP
+void setRogueApCallback(RogueApCb cb);       // Second BSSID advertising same SSID (evil twin)
+void setAttackResultCallback(AttackResultCb cb); // Attack exhausted without capture
+void setProbeRequestCallback(ProbeRequestCb cb); // Probe request frame received
+void setDisruptCallback(DisruptCb cb);       // Deauth/Disassoc frame observed
+void setTargetFilter(TargetFilterCb cb);     // Return false to ignore an AP entirely
+void setTargetScoreCallback(TargetScoreCb cb); // Custom priority score for autoTarget
+void setPacketLogger(PacketCb cb);           // Raw promiscuous-mode frames
+void setLogger(LogCb cb);                    // Redirect internal log output
+```
+
+### Engine Control
+
+```cpp
+void    tick();                           // Main worker — call from loop()
+void    setActive(bool active);           // Enable/disable frame processing
+void    stop();                           // Full teardown: abort attack, clear target, stop hopping
+void    startHopping(uint16_t dwellMs=0); // Start channel hopping
+void    stopHopping();                    // Stop hopping (attack state machine continues)
+Error   lockChannel(uint8_t ch);          // Stop hopping, lock to a channel
+Error   setChannel(uint8_t ch);           // Tune radio to a channel
+void    setChannelList(const uint8_t *channels, uint8_t count); // Restrict hop sequence
+void    setChannelBands(bool ghz24, bool ghz5); // Hop 2.4GHz, 5GHz, or both
+```
+
+### Target Control
+
+```cpp
+Error   setTarget(const uint8_t *bssid, uint8_t channel); // Focus on one BSSID
+Error   setTargetBySsid(const char *ssid);                // Pick strongest match from cache
+void    clearTarget();                                      // Resume autonomous hopping
+bool    hasTarget()    const;                               // True if focused on a target
+bool    isAttacking()  const;                               // True if attack in progress
+void    setAutoTarget(bool enable);                         // Continuously target strongest AP
+void    setAttackMask(uint8_t mask);                        // Active attack vector bitmask
+void    setAttackMaskForBssid(const uint8_t *bssid, uint8_t mask); // Per-BSSID override
+void    clearAttackMaskOverrides();
+void    setDisconnectionStrategy(DisconnectStrategy strategy); // STRATEGY_AUTO_FALLBACK / SIMULTANEOUS
+```
+
+### AP Cache & Stats
+
+```cpp
+int    getApCount() const;
+bool   getAp(int idx, ApRecord &out) const;
+bool   getApByBssid(const uint8_t *bssid, ApRecord &out) const;
+int    getClientCount(const uint8_t *bssid) const;
+bool   getClient(const uint8_t *bssid, int idx, uint8_t out_sta[6]) const;
+Stats& getStats();
+void   resetStats();
+```
+
+### Probe Wordlist
+
+```cpp
+void setProbeWordlist(const char * const *wordlist, uint8_t count);
+```
+
+When `cfg.probe_hidden_interval_ms > 0`, the engine probes each hidden AP with one wordlist entry per interval, cycling independently per AP. Use with `PoliticianProbe.h`:
+
+```cpp
+#include <PoliticianProbe.h>
+using namespace politician::probe;
+
+cfg.probe_hidden_interval_ms = 5000;
+engine.begin(cfg);
+engine.setProbeWordlist(WORDLIST, WORDLIST_COUNT); // 70-entry built-in list
+```
+
+Pass `nullptr` to revert to wildcard-only probing. The wordlist must remain in scope for the engine's lifetime (PROGMEM or static storage).
+
+### Frame Injection
+
+```cpp
+Error injectCustomFrame(const uint8_t *payload, size_t len, uint8_t channel,
+                        uint32_t lock_ms = 0, bool wait_for_channel = false);
+```
+
+- `lock_ms > 0` — disable hopping and hold channel for this duration after injection
+- `wait_for_channel = true` — queue frame for stealthy injection when hopper naturally lands on the channel
+
+---
+
+## Data Structures
+
+### Config Constants
+
+```cpp
+// Attack bits
+#define ATTACK_PMKID        0x01
+#define ATTACK_CSA          0x02
+#define ATTACK_PASSIVE      0x04
+#define ATTACK_DEAUTH       0x08
+#define ATTACK_STIMULATE    0x10
+#define ATTACK_BTM          0x20
+#define ATTACK_ALL          0x3F
+
+// Capture types (HandshakeRecord.type)
+#define CAP_PMKID           0x01  // PMKID via fake association
+#define CAP_EAPOL           0x02  // Full passive 4-way handshake
+#define CAP_EAPOL_CSA       0x03  // 4-way triggered by CSA/Deauth
+#define CAP_EAPOL_HALF      0x04  // M2-only — active pivot triggered
+#define CAP_EAPOL_GROUP     0x05  // GTK rotation (non-pairwise EAPOL-Key)
+#define CAP_SAE             0x06  // WPA3 SAE Commit/Confirm
+
+// Capture filter flags (Config.capture_filter)
+#define LOG_FILTER_HANDSHAKES   0x01  // EAPOL + PMKID (SPI SD safe)
+#define LOG_FILTER_PROBES       0x02  // Probe requests/responses (SPI SD safe)
+#define LOG_FILTER_BEACONS      0x04  // Beacons — high volume, SDMMC only
+#define LOG_FILTER_PROBE_REQ    0x08  // Probe requests as raw EPBs (SPI SD safe)
+#define LOG_FILTER_MGMT_DISRUPT 0x10  // Deauth/Disassoc EPBs (SPI SD safe)
+#define LOG_FILTER_ALL          0xFF  // Everything — SDMMC only
+```
+
+### ApRecord
+
+```cpp
+struct ApRecord {
+    uint8_t  bssid[6];
+    char     ssid[33];
+    uint8_t  ssid_len;
+    uint8_t  channel;
+    int8_t   rssi;
+    uint8_t  enc;               // 0=Open 1=WEP 2=WPA 3=WPA2/WPA3 4=Enterprise
+    bool     wps_enabled;       // WPS IE present in beacon/probe-response
+    bool     pmf_capable;       // MFPC — AP supports Protected Management Frames
+    bool     pmf_required;      // MFPR — AP mandates PMF (pure WPA3)
+    bool     ft_capable;        // 802.11r FT AKM advertised (FT-PSK or FT-EAP)
+    bool     is_hidden;         // Broadcasts empty SSID
+    bool     is_vht;            // 802.11ac (Wi-Fi 5) capable
+    bool     is_he;             // 802.11ax (Wi-Fi 6) capable
+    uint8_t  chan_width;        // Max channel width: 0=20 1=40 2=80 3=160 4=80+80 MHz
+    uint8_t  enc;               // Encryption type
+    uint8_t  total_attempts;    // Failed attack attempts against this BSSID
+    bool     captured;          // On the captured or ignore list
+    uint32_t first_seen_ms;     // millis() when first observed
+    uint32_t last_seen_ms;      // millis() of most recent beacon/probe-response
+    char     country[3];        // ISO 3166-1 alpha-2 from IE 7 (e.g. "US"), empty if absent
+    uint16_t beacon_interval;   // Beacon interval in TUs (1 TU = 1024 µs)
+    uint8_t  max_rate_mbps;     // Highest rate from Supported Rates IEs (Mbps)
+    uint16_t sta_count;         // Connected client count from BSS Load IE
+    uint8_t  chan_util;         // Channel utilization from BSS Load IE (0-255)
+    uint8_t  venue_group;       // 802.11u Venue Group (e.g., 2=Education)
+    uint8_t  venue_type;        // 802.11u Venue Type (e.g., 8=University)
+    uint8_t  network_type;      // 802.11u Access Network Type (1=Free Public, 2=Chargeable)
+};
+```
+
+### Stats
+
+```cpp
+struct Stats {
+    uint32_t total;
+    uint32_t mgmt;
+    uint32_t ctrl;
+    uint32_t data;
+    uint32_t eapol;
+    uint32_t pmkid_found;
+    uint32_t sae_found;
+    uint32_t beacons;
+    uint32_t captures;
+    uint32_t failed_pmkid;
+    uint32_t failed_csa;
+    volatile uint32_t dropped;    // Frames dropped due to ringbuffer overflow
+    uint32_t rb_max;              // Max observed ringbuffer usage (bytes)
+    uint16_t channel_frames[200]; // Frames per channel, indexed by channel number
+                                  // (e.g. ch1=index1, ch36=index36; index 0 unused)
+};
+```
+
+### HandshakeRecord
+
+```cpp
+struct HandshakeRecord {
+    uint8_t  type;           // CAP_PMKID / CAP_EAPOL / CAP_EAPOL_CSA / CAP_EAPOL_HALF / CAP_EAPOL_GROUP / CAP_SAE
+    uint8_t  channel;
+    int8_t   rssi;
+    uint8_t  bssid[6];
+    uint8_t  sta[6];
+    char     ssid[33];
+    uint8_t  ssid_len;
+    uint8_t  enc;
+    uint8_t  pmkid[16];      // PMKID path
+    uint8_t  anonce[32];     // EAPOL path
+    uint8_t  snonce[32];
+    uint8_t  mic[16];
+    uint8_t  eapol_m2[256];
+    uint8_t  eapol_m3[256];
+    uint8_t  eapol_m4[256];
+    uint16_t eapol_m2_len;
+    uint16_t eapol_m3_len;
+    uint16_t eapol_m4_len;
+    bool     has_mic;
+    bool     has_anonce;
+    bool     has_snonce;
+    bool     has_m3;
+    bool     has_m4;
+    bool     is_full;        // Complete 4-way or full SAE exchange
+    uint8_t  sae_seq;        // SAE Auth Sequence (1=Commit, 2=Confirm)
+};
+```
+
+### EapIdentityRecord
+
+```cpp
+struct EapIdentityRecord {
+    uint8_t bssid[6];
+    uint8_t client[6];
+    char    identity[65];  // Plaintext identity / email — always cleartext, pre-TLS
+    uint8_t channel;
+    int8_t  rssi;
+};
+```
+
+### WpsRecord
+
+Captured from WPS M1 (Enrollee → AP). M1 is always unencrypted — subsequent messages are inside a TLS tunnel and cannot be read passively.
+
+```cpp
+struct WpsRecord {
+    uint8_t  bssid[6];
+    uint8_t  sta[6];             // WPS Enrollee MAC
+    uint8_t  channel;
+    int8_t   rssi;
+    char     device_name[33];    // Device Name (TLV 0x1011)
+    char     manufacturer[65];   // Manufacturer (TLV 0x1021)
+    char     model_name[33];     // Model Name (TLV 0x1023)
+    char     model_number[33];   // Model Number (TLV 0x1024)
+    char     serial_number[33];  // Serial Number (TLV 0x1042)
+    uint16_t auth_type_flags;    // Supported auth types (TLV 0x1004)
+    uint16_t config_methods;     // Setup methods: PBC, PIN, NFC (TLV 0x1008)
+    uint8_t  rf_bands;           // bit0=2.4GHz, bit1=5GHz (TLV 0x103C)
+    uint16_t primary_dev_type_cat; // Device category (TLV 0x1054)
+};
+```
+
+Use `PoliticianWPS::print(Serial, rec)` for formatted output. See `PoliticianWPS.h` for bitmask constants and helpers.
+
+### MsChapRecord *(requires bare MSCHAPv2 — no PEAP/TTLS tunnel)*
+
+```cpp
+// #ifndef POLITICIAN_NO_MSCHAPV2
+struct MsChapRecord {
+    uint8_t bssid[6];
+    uint8_t sta[6];
+    uint8_t channel;
+    int8_t  rssi;
+    char    username[65];
+    uint8_t server_challenge[16]; // From MSCHAPv2 Challenge frame
+    uint8_t peer_challenge[16];   // From MSCHAPv2 Response frame
+    uint8_t nt_response[24];      // Offline crackable with hashcat -m 5500
+};
+// #endif
+```
+
+> **Note:** This only fires against networks delivering bare EAP-MSCHAPv2 without a TLS tunnel — a misconfiguration. Most enterprise networks wrap MSCHAPv2 inside PEAP or TTLS, making it opaque. `EapIdentityRecord` (username only) works against all 802.1X deployments regardless of inner method.
+
+### Other Records
+
+```cpp
+struct AttackResultRecord { uint8_t bssid[6]; char ssid[33]; uint8_t ssid_len; AttackResult result; };
+struct RogueApRecord      { uint8_t known_bssid[6]; uint8_t rogue_bssid[6]; char ssid[33]; uint8_t ssid_len; uint8_t channel; int8_t rssi; };
+struct ProbeRequestRecord { uint8_t client[6]; uint8_t channel; int8_t rssi; char ssid[33]; uint8_t ssid_len; bool rand_mac; };
+struct DisruptRecord      { uint8_t src[6]; uint8_t dst[6]; uint8_t bssid[6]; uint16_t reason; uint8_t subtype; uint8_t channel; int8_t rssi; bool rand_mac; };
+```
+
+---
+
+## Storage Utilities
+
+Requires `#include <PoliticianStorage.h>`. Arduino only.
+
+### Streaming PCAPNG (Recommended)
+
+Keep the file handle open across the entire capture session — avoids repeated SD open/close overhead and reduces wear:
+
+```cpp
+PcapngFileLogger pcap;
 
 void setup() {
-    engine.begin();
-    engine.setTargetScoreCallback(hunterScore);
-    engine.setAutoTarget(true);
-    engine.startHopping();
+    SD.begin();
+    pcap.open(SD, "/captures.pcapng"); // writes global header once if file is new
+}
+
+void onHandshake(const HandshakeRecord &rec) {
+    pcap.write(rec);
+}
+
+void onPacket(const uint8_t *payload, uint16_t len, int8_t rssi, uint8_t ch, uint32_t ts) {
+    pcap.writePacket(payload, len, rssi, ch, ts);
+}
+
+void teardown() {
+    pcap.close(); // or let destructor handle it
 }
 ```
 
-#### Custom Frame Injection & Fuzzing
+### One-Shot PCAPNG (Legacy)
 
-Inject arbitrary 802.11 frames with precise channel control:
+Opens and closes the file on every call — suitable for infrequent writes:
 
 ```cpp
-// Malformed Probe Request for fuzzing
-uint8_t malformedFrame[] = { 0x40, 0x00, ... };
-
-void loop() {
-    engine.tick();
-    
-    // Inject immediately on channel 6, locking the hopper for 100ms
-    engine.injectCustomFrame(malformedFrame, sizeof(malformedFrame), 6, 100);
-    
-    // Queue for stealthy injection (fires only when hopper lands on ch 11)
-    engine.injectCustomFrame(malformedFrame, sizeof(malformedFrame), 11, 0, true);
-}
+PcapngFileLogger::append(SD, "/captures.pcapng", rec);
+PcapngFileLogger::appendPacket(SD, "/intel.pcapng", payload, len, rssi, ch, ts);
 ```
 
-#### Disconnection Strategy
-
-Optimize stealth by chaining attack methods sequentially:
+### HC22000
 
 ```cpp
-void setup() {
-    Config cfg;
-    engine.begin(cfg);
-    
-    // Attempt CSA (Stealthy) first, fallback to Deauth only if needed
-    engine.setDisconnectionStrategy(STRATEGY_AUTO_FALLBACK);
-    
-    engine.setAttackMask(ATTACK_CSA | ATTACK_DEAUTH);
-}
+Hc22000FileLogger hc;
+hc.open(SD, "/captures.hc22000");
+hc.write(rec);
+hc.close();
+
+// Or one-shot:
+Hc22000FileLogger::append(SD, "/captures.hc22000", rec);
 ```
 
-#### 802.11u Interworking Discovery
-
-Discover the physical venue context of public networks:
+### Wigle CSV
 
 ```cpp
-void onAp(const ApRecord &ap) {
-    if (ap.venue_group != 0) {
-        Serial.printf("Venue: Group %d, Type %d\n", ap.venue_group, ap.venue_type);
-        // e.g., Group 2 (Education), Type 8 (University)
+// Log an AP (use in setApFoundCallback)
+WigleCsvLogger::appendAp(SD, "/wardrive.csv", ap, lat, lon);
+
+// Log a capture (use in setEapolCallback)
+WigleCsvLogger::append(SD, "/wardrive.csv", rec, lat, lon);
+```
+
+### Enterprise CSV
+
+```cpp
+EnterpriseCsvLogger::append(SD, "/identities.csv", rec);
+```
+
+### NVS BSSID Cache (Deduplication)
+
+```cpp
+NvsBssidCache nvsCache("captures", 128);
+
+void onHandshake(const HandshakeRecord &rec) {
+    if (!nvsCache.contains(rec.bssid)) {
+        nvsCache.add(rec.bssid);   // staged in RAM — not written to flash yet
+        // ... log record ...
+    }
+}
+
+void onTeardown() {
+    if (nvsCache.isDirty()) {
+        nvsCache.flush();   // single NVS write for all staged adds
     }
 }
 ```
 
-#### Callbacks
+The dirty-flag pattern batches NVS writes: `add()` only updates RAM; `flush()` performs the single NVS `putBytes()` call. Call `flush()` at natural checkpoints (e.g., channel hop, button press, `end()`).
+
+---
+
+## Advanced Features
+
+### 802.11v BTM Injection
+
+BTM (BSS Transition Management) is a Wi-Fi 802.11v mechanism that politely asks clients to roam. When a client respects it, it disconnects and reassociates — triggering a new EAPOL handshake. Combines with or replaces CSA/Deauth:
 
 ```cpp
-void setEapolCallback(EapolCb cb);              // Handshake captured (EAPOL, PMKID, or group key)
-void setApFoundCallback(ApFoundCb cb);          // New AP discovered (respects min_beacon_count)
-void setIdentityCallback(IdentityCb cb);        // 802.1X EAP-Identity harvested
-void setAttackResultCallback(AttackResultCb cb);// Attack exhausted without capturing
-void setTargetFilter(TargetFilterCb cb);        // Early filter — return false to ignore AP
-void setPacketLogger(PacketCb cb);              // Raw promiscuous-mode frames
-void setProbeRequestCallback(ProbeRequestCb cb);// Probe request received (client device history)
-void setDisruptCallback(DisruptCb cb);          // Deauth/Disassoc frame received
-void setClientFoundCallback(ClientFoundCb cb);  // New client STA seen associated to an AP
-void setRogueApCallback(RogueApCb cb);          // Second BSSID with same SSID on same channel (evil twin)
+Config cfg;
+cfg.btm_burst_count   = 8;  // frames per client
+cfg.btm_disassoc_timer = 3; // TBTTs (~300ms) until expected disassoc
+engine.begin(cfg);
+engine.setAttackMask(ATTACK_BTM | ATTACK_CSA); // BTM first, CSA as fallback
 ```
 
-#### State & Stats
+BTM fires independently for every known client on the target AP. Most modern phones and laptops honour it; legacy 802.11a/b/g devices ignore it.
+
+### WPS M1 Device Fingerprinting
 
 ```cpp
-bool    isActive()    const;  // True if frame processing is enabled
-bool    isAttacking() const;  // True if a PMKID/CSA attack is in progress
-bool    hasTarget()   const;  // True if focused on a specific BSSID
-uint8_t getChannel()  const;  // Current radio channel
-int8_t  getLastRssi() const;  // RSSI of the last received frame
-Stats&  getStats();           // Reference to frame counters (captures, failures, etc.)
-Config& getConfig();          // Reference to the active config for runtime mutations
-void    resetStats();         // Zero all counters
-int     getApCount() const;   // Number of APs in the discovery cache
-bool    getAp(int idx, ApRecord &out) const;                  // Read AP from cache by index
-bool    getApByBssid(const uint8_t* bssid, ApRecord &out) const; // Look up AP by BSSID
-int     getClientCount(const uint8_t* bssid) const;           // Number of clients seen on AP (0-4)
-bool    getClient(const uint8_t* bssid, int idx, uint8_t out_sta[6]) const; // Read client MAC by index
+#include <PoliticianWPS.h>
+using namespace politician;
+
+engine.setWpsCallback([](const WpsRecord &rec) {
+    PoliticianWPS::print(Serial, rec);
+    // rec.config_methods & PoliticianWPS::CFG_PUSH_BUTTON → PBC supported
+    // rec.rf_bands & 0x02 → 5GHz capable
+});
 ```
 
-#### Engine Control
+### Bare EAP-MSCHAPv2 Capture
 
 ```cpp
-void setActive(bool active);  // Enable or disable frame processing without full teardown
-void setLogger(LogCb cb);     // Redirect internal log output to a custom callback
+engine.setMsChapCallback([](const MsChapRecord &rec) {
+    Serial.printf("[MSCHAPv2] user=%s\n", rec.username);
+    // Feed to: hashcat -m 5500 "user::::peer_chal:nt_resp:srv_chal"
+    // or: asleap -C server_challenge -R nt_response
+});
 ```
 
-#### Target & Channel Control
+### Hidden Network Discovery with Wordlist
 
 ```cpp
-Error setTarget(const uint8_t* bssid, uint8_t channel); // Focus on one BSSID
-void  clearTarget();                                     // Resume autonomous operation
-Error setChannel(uint8_t ch);                            // Tune to a specific channel
-Error lockChannel(uint8_t ch);                           // Stop hopping, lock channel
-void  startHopping(uint16_t dwellMs = 0);                // Start channel hopping
-void  stopHopping();                                     // Stop hopping (attack state machine continues)
-void  stop();                                            // Full teardown: abort attack, clear target, stop hopping, disable capture
-void  setChannelList(const uint8_t* channels, uint8_t count); // Restrict hop sequence
-void  setChannelBands(bool ghz24, bool ghz5);                // Hop 2.4GHz, 5GHz, or both
-Error setTargetBySsid(const char* ssid);                     // Lock target by SSID (picks strongest match from cache)
-void  setAutoTarget(bool enable);                            // Continuously auto-target strongest uncaptured AP
+#include <PoliticianProbe.h>
+using namespace politician::probe;
+
+Config cfg;
+cfg.probe_hidden_interval_ms = 5000; // probe one word every 5s per hidden AP
+engine.begin(cfg);
+engine.setProbeWordlist(WORDLIST, WORDLIST_COUNT); // 70 common SSIDs in PROGMEM
+
+// Optionally supply your own:
+static const char * const myList[] = { "CorpNet", "HQ-Internal", "IoT-Devices" };
+engine.setProbeWordlist(myList, 3);
 ```
 
-#### Captured List
+Each hidden AP in the cache maintains its own position in the wordlist — APs cycle independently so no word is ever skipped. If the AP responds, its SSID is revealed and stored in the cache automatically.
+
+### VHT/HE Detection
 
 ```cpp
-void markCaptured(const uint8_t* bssid);                       // Skip this BSSID forever
-void clearCapturedList();                                       // Reset captured list
-void setIgnoreList(const uint8_t (*bssids)[6], uint8_t count); // Permanent ignore list
+engine.setApFoundCallback([](const ApRecord &ap) {
+    const char *gen = ap.is_he ? "Wi-Fi 6 (ax)" : ap.is_vht ? "Wi-Fi 5 (ac)" : "Wi-Fi 4 (n)";
+    const char *width[] = { "20MHz", "40MHz", "80MHz", "160MHz", "80+80MHz" };
+    Serial.printf("%s  %s  %s\n", ap.ssid, gen, width[ap.chan_width]);
+});
 ```
 
-#### Attack Control
+### Autonomous Hunter (Score-Based Targeting)
 
 ```cpp
-void setAttackMask(uint8_t mask);                                // Configure active attack vectors (bitmask)
-void setAttackMaskForBssid(const uint8_t* bssid, uint8_t mask); // Per-BSSID override (up to 8 entries)
-void clearAttackMaskOverrides();                                  // Remove all per-BSSID overrides
+engine.setTargetScoreCallback([](const ApRecord &ap, const char *vendor) -> int {
+    int score = ap.rssi;
+    if (strstr(vendor, "Apple"))    score += 50;
+    if (strstr(vendor, "Hikvision")) score += 80;
+    if (ap.is_hidden)               score -= 100;
+    return score;
+});
+engine.setAutoTarget(true);
+engine.startHopping();
 ```
 
-#### Attack Mode Constants
+### Per-BSSID Attack Overrides
 
 ```cpp
-#define ATTACK_PMKID        0x01  // PMKID fishing via fake association
-#define ATTACK_CSA          0x02  // Channel Switch Announcement injection
-#define ATTACK_PASSIVE      0x04  // Listen-only — zero transmission
-#define ATTACK_DEAUTH       0x08  // Classic deauthentication (Reason 7)
-#define ATTACK_STIMULATE    0x10  // QoS Null Data client stimulation
-#define ATTACK_ALL          0x1F  // All attack vectors
+uint8_t sensitive_ap[6] = { 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
+engine.setAttackMaskForBssid(sensitive_ap, ATTACK_PASSIVE); // passive-only for this AP
+engine.setAttackMask(ATTACK_ALL);                           // global default unchanged
 ```
 
-#### Capture Type Constants
+### Custom Disconnection Strategy
 
 ```cpp
-#define CAP_PMKID        0x01  // PMKID extracted via fake association
-#define CAP_EAPOL        0x02  // Full M1+M2 from passive capture
-#define CAP_EAPOL_CSA    0x03  // Full M1+M2 triggered by CSA/Deauth
-#define CAP_EAPOL_HALF   0x04  // M2-only (no anonce) — active attack pivot fired
-#define CAP_EAPOL_GROUP  0x05  // Non-pairwise EAPOL-Key (GTK rotation)
+// CSA first; fallback to Deauth halfway through csa_wait_ms if no capture (default)
+engine.setDisconnectionStrategy(STRATEGY_AUTO_FALLBACK);
+
+// CSA and Deauth simultaneously (legacy behavior)
+engine.setDisconnectionStrategy(STRATEGY_SIMULTANEOUS);
 ```
 
-#### Capture Filter Constants
+### Half-Handshakes and Smart Pivot
 
-```cpp
-#define LOG_FILTER_HANDSHAKES   0x01  // EAPOLs and PMKIDs (SPI-safe)
-#define LOG_FILTER_PROBES       0x02  // Probe requests and responses (SPI-safe)
-#define LOG_FILTER_BEACONS      0x04  // Beacons — high volume, SDMMC only
-#define LOG_FILTER_PROBE_REQ    0x08  // Probe requests as raw EPBs (SPI-safe)
-#define LOG_FILTER_MGMT_DISRUPT 0x10  // Deauth/Disassoc frames as raw EPBs (SPI-safe)
-#define LOG_FILTER_ALL          0xFF  // Everything — SDMMC only
-```
+When `cfg.capture_half_handshakes = true`, M2-only captures fire the EAPOL callback with `type = CAP_EAPOL_HALF`, then the engine immediately launches CSA/Deauth to force a fresh 4-way handshake.
 
-### Data Structures
+### 802.11r Fast Transition Detection
 
-#### Stats
+`ApRecord.ft_capable` is set when FT-PSK (suite type 4) or FT-EAP (suite type 3) AKMs are detected. For FT-only APs, save the PCAPNG capture and use `hcxpcapngtool --enable_ft` for offline cracking.
 
-```cpp
-struct Stats {
-    uint32_t total;              // Total frames received
-    uint32_t mgmt;               // Management frames
-    uint32_t ctrl;               // Control frames
-    uint32_t data;               // Data frames
-    uint32_t eapol;              // EAPOL frames detected
-    uint32_t pmkid_found;        // PMKIDs captured
-    uint32_t beacons;            // Beacon and probe-response frames
-    uint32_t captures;           // Total successful captures
-    uint32_t failed_pmkid;       // PMKID attempts exhausted without capture
-    uint32_t failed_csa;         // CSA/Deauth windows expired without EAPOL
-    uint16_t channel_frames[14]; // Frames per 2.4GHz channel (index 0 = ch1 … index 13 = ch14)
-};
-```
-
-#### HandshakeRecord
-
-```cpp
-struct HandshakeRecord {
-    uint8_t  type;           // CAP_PMKID / CAP_EAPOL / CAP_EAPOL_CSA / CAP_EAPOL_HALF / CAP_EAPOL_GROUP
-    uint8_t  channel;
-    int8_t   rssi;
-    uint8_t  bssid[6];
-    uint8_t  sta[6];         // Client (station) MAC
-    char     ssid[33];
-    uint8_t  ssid_len;
-    uint8_t  enc;            // 0=Open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
-    // PMKID path
-    uint8_t  pmkid[16];
-    // EAPOL path
-    uint8_t  anonce[32];
-    uint8_t  mic[16];
-    uint8_t  eapol_m2[256];
-    uint16_t eapol_m2_len;
-    bool     has_mic;
-    bool     has_anonce;
-};
-```
-
-#### EapIdentityRecord
-
-```cpp
-struct EapIdentityRecord {
-    uint8_t bssid[6];       // Access Point MAC
-    uint8_t client[6];      // Enterprise client MAC
-    char    identity[65];   // Plaintext identity / email
-    uint8_t channel;
-    int8_t  rssi;
-};
-```
-
-#### ApRecord
-
-```cpp
-struct ApRecord {
-    uint8_t bssid[6];
-    char    ssid[33];
-    uint8_t ssid_len;
-    uint8_t channel;
-    int8_t  rssi;
-    uint8_t enc;           // 0=Open, 1=WEP, 2=WPA, 3=WPA2/WPA3, 4=Enterprise
-    bool    wps_enabled;   // WPS IE detected in beacon/probe-response
-    bool    pmf_capable;     // MFPC — AP supports Protected Management Frames
-    bool    pmf_required;    // MFPR — AP mandates PMF (pure WPA3 / PMF-Required)
-    uint8_t total_attempts;  // Failed attack attempts against this BSSID
-    bool    captured;        // True if BSSID is on the captured or ignore list
-    bool     ft_capable;      // 802.11r FT AKM advertised (FT-PSK suite 4 or FT-EAP suite 3)
-    uint32_t first_seen_ms;   // millis() timestamp when this AP was first observed
-    uint32_t last_seen_ms;    // millis() timestamp of the most recent beacon or probe response
-    char     country[3];      // ISO 3166-1 alpha-2 country code from IE 7 (e.g. "US"), empty if absent
-    uint16_t beacon_interval; // Advertised beacon interval in TUs (1 TU = 1024 µs), 0 if unknown
-    uint8_t  max_rate_mbps;   // Highest legacy data rate from Supported Rates IE (Mbps), 0 if unknown
-};
-```
-
-#### AttackResultRecord
-
-```cpp
-enum AttackResult : uint8_t {
-    RESULT_PMKID_EXHAUSTED = 1,  // All PMKID retries failed
-    RESULT_CSA_EXPIRED     = 2,  // CSA/Deauth window closed, no EAPOL received
-};
-
-struct AttackResultRecord {
-    uint8_t      bssid[6];
-    char         ssid[33];
-    uint8_t      ssid_len;
-    AttackResult result;
-};
-```
-
-#### RogueApRecord
-
-```cpp
-struct RogueApRecord {
-    uint8_t known_bssid[6]; // BSSID of the first AP already cached with this SSID
-    uint8_t rogue_bssid[6]; // BSSID of the newly observed AP sharing the same SSID
-    char    ssid[33];       // The shared SSID
-    uint8_t ssid_len;
-    uint8_t channel;        // Channel on which the conflict was detected
-    int8_t  rssi;           // Signal strength of the rogue AP (dBm)
-};
-```
-
-#### ProbeRequestRecord
-
-```cpp
-struct ProbeRequestRecord {
-    uint8_t client[6];   // Probing device MAC
-    uint8_t channel;
-    int8_t  rssi;
-    char    ssid[33];    // Requested SSID (empty = wildcard probe)
-    uint8_t ssid_len;
-    bool    rand_mac;    // True if locally administered bit set (iOS/Android MAC randomization)
-};
-```
-
-#### DisruptRecord
-
-```cpp
-struct DisruptRecord {
-    uint8_t  src[6];     // Frame source MAC
-    uint8_t  dst[6];     // Frame destination MAC
-    uint8_t  bssid[6];   // BSSID (addr3)
-    uint16_t reason;     // 802.11 reason code
-    uint8_t  subtype;    // MGMT_SUB_DEAUTH (0xC0) or MGMT_SUB_DISASSOC (0xA0)
-    uint8_t  channel;
-    int8_t   rssi;
-    bool     rand_mac;   // True if source MAC has locally administered bit set (randomized)
-};
-```
-
-### Format Utilities
-
-PCAPNG is the primary capture format — it is tool-agnostic, preserves full frame context, and can be opened in Wireshark or piped through `hcxpcapngtool`. HC22000 is an auxiliary text export for users who want to feed captures directly into `hashcat` without an intermediate conversion step.
-
-```cpp
-// Convert a HandshakeRecord to an HC22000 string (auxiliary — use PCAPNG as the primary output)
-String toHC22000(const HandshakeRecord& rec);
-
-// Write PCAPNG global header (SHB + IDB) — call once at file start
-size_t writePcapngGlobalHeader(uint8_t* buffer);
-
-// Serialize a HandshakeRecord into PCAPNG Enhanced Packet Blocks
-size_t writePcapngRecord(const HandshakeRecord& rec, uint8_t* buffer, size_t max_len);
-
-// Serialize a raw 802.11 frame into a PCAPNG Enhanced Packet Block
-size_t writePcapngPacket(const uint8_t* payload, size_t len,
-                        int8_t rssi, uint8_t channel, uint64_t ts_usec, 
-                        uint8_t* buffer, size_t max_len);```
-
-### Stress Utilities (Opt-in)
-
-Requires `#include <PoliticianStress.h>`. Not linked unless explicitly included.
-
-```cpp
-// Flood a WPA3 AP with SAE Commit frames to exhaust its anti-clogging token heap
-stress::saeCommitFlood(const uint8_t* bssid, uint32_t count = 1000);
-
-// Flood nearby APs with randomized Probe Requests to saturate association queues
-stress::probeRequestFlood(uint32_t count = 1000);
-```
-
-### Storage Utilities (Optional)
-
-Requires `#include <PoliticianStorage.h>`.
-
-```cpp
-// Append handshake to PCAPNG file (writes global header automatically)
-PcapngFileLogger::append(fs::FS& fs, const char* path,
-                         const HandshakeRecord& rec);
-
-// Append raw 802.11 frame to PCAPNG file
-PcapngFileLogger::appendPacket(fs::FS& fs, const char* path,
-                               const uint8_t* payload, uint16_t len,
-                               int8_t rssi, uint32_t ts_usec);
-
-// Append handshake details to Wigle CSV
-WigleCsvLogger::append(fs::FS& fs, const char* path,
-                       const HandshakeRecord& rec, float lat, float lon,
-                       float alt = 0.0, float acc = 10.0,
-                       const char* timestamp = nullptr);  // e.g. "2024-06-01 14:30:00"
-
-// Append any discovered AP to Wigle CSV (use with setApFoundCallback)
-WigleCsvLogger::appendAp(fs::FS& fs, const char* path,
-                         const ApRecord& ap, float lat, float lon,
-                         float alt = 0.0, float acc = 10.0,
-                         const char* timestamp = nullptr);
-
-// Append handshake to HC22000 text file
-Hc22000FileLogger::append(fs::FS& fs, const char* path,
-                           const HandshakeRecord& rec);
-
-// Append harvested enterprise identity to CSV
-EnterpriseCsvLogger::append(fs::FS& fs, const char* path,
-                            const EapIdentityRecord& rec);
-```
+---
 
 ## Usage Examples
 
-### Targeted Network Auditing
-
-Use callbacks to filter networks by signal strength, encryption type, or SSID pattern:
+### Enterprise Identity Harvesting
 
 ```cpp
-engine.setTargetFilter([](const politician::ApRecord &ap) {
-    // Only audit strong signals
-    if (ap.rssi < -70) return false;
-    
-    // Skip Open/WEP networks
-    if (ap.enc < 3) return false;
-    
-    // Skip corporate networks  
-    if (strstr(ap.ssid, "CORP-") != nullptr) return false;
-    
+engine.setIdentityCallback([](const EapIdentityRecord &rec) {
+    Serial.printf("[802.1X] %s\n", rec.identity); // e.g., "john.smith@corp.com"
+    EnterpriseCsvLogger::append(SD, "/identities.csv", rec);
+});
+Config cfg;
+cfg.hop_dwell_ms = 800; // longer dwell gives EAP exchanges time to complete
+engine.begin(cfg);
+```
+
+### GPS Wardriving
+
+```cpp
+#include <TinyGPS++.h>
+TinyGPSPlus gps;
+
+engine.setApFoundCallback([&](const ApRecord &ap) {
+    if (gps.location.isValid())
+        WigleCsvLogger::appendAp(SD, "/wardrive.csv", ap,
+                                 gps.location.lat(), gps.location.lng());
+});
+```
+
+### Selective Attack Filtering
+
+```cpp
+engine.setTargetFilter([](const ApRecord &ap) -> bool {
+    if (ap.rssi < -70) return false;    // too weak
+    if (ap.enc < 2)    return false;    // skip Open/WEP
+    if (ap.pmf_required) return false;  // skip pure WPA3
     return true;
 });
 ```
 
-### Selective Attack Modes
+### Streaming Packet Capture
 
 ```cpp
-// Modern CSA-only (bypasses PMF)
-engine.setAttackMask(ATTACK_CSA);
-
-// Classic deauth for legacy networks
-engine.setAttackMask(ATTACK_DEAUTH);
-
-// Passive monitoring with client stimulation
-engine.setAttackMask(ATTACK_PASSIVE | ATTACK_STIMULATE);
-
-// Full aggression
-engine.setAttackMask(ATTACK_ALL);
-```
-
-### Enterprise Credential Harvesting
-
-```cpp
-void onIdentity(const EapIdentityRecord &rec) {
-    char bssid[18];
-    snprintf(bssid, sizeof(bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
-             rec.bssid[0], rec.bssid[1], rec.bssid[2],
-             rec.bssid[3], rec.bssid[4], rec.bssid[5]);
-    Serial.printf("[802.1X] %s → %s\n", bssid, rec.identity);
-    EnterpriseCsvLogger::append(SD, "/identities.csv", rec);
-}
-
-void setup() {
-    engine.setIdentityCallback(onIdentity);
-
-    Config cfg;
-    cfg.hop_dwell_ms = 800;  // Longer dwell for EAP exchanges
-    engine.begin(cfg);
-}
-```
-
-### Persistent Storage
-
-The core library is decoupled from filesystem dependencies. Optionally include `PoliticianStorage.h` for SD card logging:
-
-```cpp
-#include <PoliticianStorage.h>
-#include <SD.h>
-
-using namespace politician::storage;
-
-void onHandshake(const HandshakeRecord &rec) {
-    // Append to PCAPNG file (creates headers automatically)
-    PcapngFileLogger::append(SD, "/captures.pcapng", rec);
-}
-
-void onPacket(const uint8_t* payload, uint16_t len, int8_t rssi, uint8_t channel, uint32_t ts) {
-    // Log raw 802.11 frames
-    PcapngFileLogger::appendPacket(SD, "/intel.pcapng", payload, len, rssi, channel, ts);
-}
-
-void setup() {
-    SD.begin();
-    engine.setEapolCallback(onHandshake);
-    engine.setPacketLogger(onPacket);
-    
-    Config cfg;
-    cfg.capture_filter = LOG_FILTER_HANDSHAKES | LOG_FILTER_PROBES;
-    engine.begin(cfg);
-}
-```
-
-**⚠️ Logging Performance Warning**
-
-Beacon logging (`LOG_FILTER_BEACONS`) can generate 500+ writes/second. Standard SPI SD card writes are **blocking** and will freeze the engine. For high-volume logging, use ESP32 boards with native **SDMMC** (4-bit) hardware support and DMA.
-
-### GPS Integration (Wigle.net)
-
-Combine with a GPS module for wardriving datasets:
-
-```cpp
-#include <TinyGPS++.h>
-
-TinyGPSPlus gps;
-
-// Log every discovered AP (use appendAp for ApRecord)
-void onAp(const ApRecord &ap) {
-    if (gps.location.isValid()) {
-        WigleCsvLogger::appendAp(SD, "/wardrive.csv", ap,
-                                 gps.location.lat(),
-                                 gps.location.lng());
-    }
-}
-
-// Log captured handshakes with GPS context (use append for HandshakeRecord)
-void onHandshake(const HandshakeRecord &rec) {
-    if (gps.location.isValid()) {
-        WigleCsvLogger::append(SD, "/wardrive.csv", rec,
-                               gps.location.lat(),
-                               gps.location.lng());
-    }
-}
-```
-
-## Advanced Features
-
-### Half-Handshakes and Smart Pivot
-
-When `cfg.capture_half_handshakes = true`, the engine fires the EAPOL callback with `type = CAP_EAPOL_HALF` on M2-only captures. These records have no `anonce` so they cannot be directly cracked, but they confirm an active client is present.
-
-The engine immediately executes a **Smart Pivot**:
-1. Marks the network as having active clients
-2. Launches CSA/Deauth to force a fresh 4-way handshake
-3. Captures the complete M1+M2 on reconnection
-
-### Attack Result Callbacks
-
-Register `setAttackResultCallback()` to be notified when an attack exhausts all options without capturing anything. Useful for logging failed targets or adjusting strategy at runtime:
-
-```cpp
-engine.setAttackResultCallback([](const AttackResultRecord &res) {
-    char bssid[18];
-    snprintf(bssid, sizeof(bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
-             res.bssid[0], res.bssid[1], res.bssid[2],
-             res.bssid[3], res.bssid[4], res.bssid[5]);
-    if (res.result == RESULT_PMKID_EXHAUSTED)
-        Serial.printf("[!] PMKID failed: %s (%s)\n", res.ssid, bssid);
-    else if (res.result == RESULT_CSA_EXPIRED)
-        Serial.printf("[!] CSA/Deauth timed out: %s (%s)\n", res.ssid, bssid);
+PcapngFileLogger raw;
+raw.open(SD, "/intel.pcapng");
+engine.setPacketLogger([&](const uint8_t *data, uint16_t len, int8_t rssi, uint8_t ch, uint32_t ts) {
+    raw.writePacket(data, len, rssi, ch, ts);
 });
 ```
 
-### 802.11r Fast Transition Detection
-
-The engine detects 802.11r Fast Transition AKMs (FT-PSK suite type 4, FT-EAP suite type 3) in beacon and probe-response RSN IEs. When detected, `ApRecord.ft_capable` is set to `true` and a log note is emitted during PMKID fishing.
-
-For FT Transition Mode APs (advertising both FT-PSK and regular WPA2-PSK), standard PMKID capture via the WPA2-PSK path works normally. For FT-only APs, the captured PMKID is FT-derived — save it as PCAPNG and use FT-aware offline tools (e.g. `hcxpcapngtool --enable_ft`) for cracking.
-
-### Hidden Network Discovery
-
-Probe Response frames triggered by deauth bursts automatically reveal hidden SSIDs. The engine caches these with zero configuration required.
-
-### PMF/WPA3 Detection
-
-RSNE (Robust Security Network Element) parsing automatically identifies networks with PMF Required. These are skipped to save time, but WPA3 Transition Mode networks (PMF Capable but not Required) are still targeted.
-
-`ApRecord` exposes `pmf_capable` and `pmf_required` so `setTargetFilter` callbacks can make finer-grained decisions than the binary `skip_immune_networks` config field — for example, to target only WPA3 Transition networks (PMF capable but not required).
-
-## Examples
-
-The library includes complete examples demonstrating various use cases:
-
-| Example | Description |
-|---------|-------------|
-| `DeviceFingerprinting` | Passive discovery of IoT and consumer electronics |
-| `TargetedAuditing` | Network filtering with callbacks |
-| `EnterpriseAuditing` | 802.1X identity harvesting |
-| `StorageAndNVS` | SD card PCAPNG logging and NVS persistence |
-| `WigleIntegration` | GPS wardriving with Wigle CSV export |
-| `ExportFormats` | PCAPNG capture and auxiliary HC22000 text export |
-| `DynamicControl` | Runtime attack mode switching |
-| `AutoEnterpriseHunter` | Automatic enterprise network targeting |
-| `SerialStreaming` | Real-time packet streaming |
-| `StressTest` | Performance and memory testing |
-
-See the [`examples/`](examples/) directory for complete source code.
-
-## Documentation
-
-Full API documentation is available in the [`docs/`](docs/) directory. Generate fresh documentation:
-
-```bash
-doxygen Doxyfile
-```
-
-Then open `docs/html/index.html` in your browser.
-
-
-## Hardware Requirements
-
-- **Platform**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3 (ESP32-C6 pending Arduino framework support in PlatformIO)
-- **Framework**: Arduino or ESP-IDF — both are supported natively via `src/politician_compat.h`. `PoliticianStorage.h` requires Arduino and will not compile under ESP-IDF.
-- **Memory**: Minimum 4MB flash recommended
-- **Optional**: SD card module for persistent logging
-- **Optional**: GPS module for Wigle integration
+---
 
 ## Performance Considerations
 
-- **Channel Hopping**: Default 200ms dwell time balances discovery speed vs. capture reliability
-- **Memory**: Core engine uses ~45KB RAM. Storage helpers are opt-in
-- **CPU**: Non-blocking state machine keeps `loop()` responsive
-- **Half-Handshakes**: Enable for better capture rate on fast-hopping scenarios
+| Concern | Guidance |
+|---------|----------|
+| **SD writes** | Use streaming `open/write/close` — never one-shot in a tight loop |
+| **Beacon logging** | `LOG_FILTER_BEACONS` generates 500+ writes/s — requires SDMMC (4-bit DMA) |
+| **Enterprise capture** | Set `hop_dwell_ms = 800–1200` to not cut off EAP exchanges mid-flight |
+| **Flash size** | Use feature gates (`POLITICIAN_NO_DB`, etc.) to trim binary on tight builds |
+| **RAM** | Core engine ~45KB. Storage helpers and callbacks are opt-in |
+| **5GHz** | `channel_frames[200]` covers all channels; use `setChannelBands(false, true)` to hop 5GHz only |
+
+## Hardware Requirements
+
+- **Platform**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3
+- **Framework**: Arduino or ESP-IDF (storage helpers are Arduino-only)
+- **Flash**: 4MB minimum recommended
+- **Optional**: SD card module for persistent logging; GPS module for Wigle integration
 
 ## Troubleshooting
 
-**No handshakes captured:**
-- Verify WiFi is enabled and promiscuous mode works
+**No handshakes captured**
+- Try `ATTACK_ALL` for maximum aggression
 - Increase `hop_dwell_ms` for slow-reconnecting devices
-- Check if target networks use PMF Required (will be auto-skipped)
-- Try `ATTACK_ALL` mask for maximum aggression
+- Check `skip_immune_networks` — pure WPA3 APs are auto-skipped by default
 
-**SD card writes fail:**
-- Ensure SD.begin() succeeds before logging
-- Check file permissions and available space
-- Disable `LOG_FILTER_BEACONS` if using SPI SD cards
+**Enterprise identities not captured**
+- Increase `hop_dwell_ms` to 800-1200ms
+- Use `ATTACK_PASSIVE` or `ATTACK_STIMULATE` only — aggressive attacks disrupt EAP exchanges
 
-**Enterprise identities not captured:**
-- Increase `hop_dwell_ms` to 800-1200ms for EAP exchanges
-- Use `ATTACK_PASSIVE` or `ATTACK_STIMULATE` only
-- Aggressive attacks may interrupt EAP authentication
+**WPS / MSCHAPv2 callbacks never fire**
+- WPS requires a WPS Enrollee actively associating during capture
+- MSCHAPv2 only fires against bare (no-tunnel) EAP-MSCHAPv2 — rare in modern deployments
+- Verify the callback is registered before `begin()`
+
+**SD card writes fail**
+- Confirm `SD.begin()` succeeds before any logger call
+- Disable `LOG_FILTER_BEACONS` if using SPI SD — use SDMMC for high-volume logging
+
+## Examples
+
+| Example | Description |
+|---------|-------------|
+| `AutonomousHunter` | Score-based auto-targeting with fingerprinting |
+| `AutoEnterpriseHunter` | Automatic enterprise network targeting |
+| `DeviceFingerprinting` | Passive IoT/consumer brand identification |
+| `TargetedAuditing` | Network filtering and callbacks |
+| `EnterpriseAuditing` | 802.1X identity harvesting |
+| `StorageAndNVS` | Streaming PCAPNG logging and NVS persistence |
+| `WigleIntegration` | GPS wardriving with Wigle CSV export |
+| `ExportFormats` | PCAPNG capture and HC22000 text export |
+| `DynamicControl` | Runtime attack mode switching |
+| `FuzzingAndInjection` | Custom frame injection and fuzzing |
+| `SerialStreaming` | Real-time packet streaming |
+| `StressTest` | Performance and memory testing |
 
 ## Legal & Ethical Use
 
 This library is intended for:
 - ✅ Authorized penetration testing
-- ✅ Security research in controlled environments  
+- ✅ Security research in controlled environments
 - ✅ Educational purposes with permission
 - ✅ Auditing your own networks
 
@@ -859,17 +828,14 @@ The authors and contributors assume no liability for misuse of this software.
 
 ## Contributing
 
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Add tests/examples for new features
-4. Submit a pull request
+Contributions are welcome! Fork the repository, create a feature branch, add tests/examples for new features, and submit a pull request.
 
 ## License
 
-MIT License - see [`LICENSE`](LICENSE) for details.
+MIT License — see [`LICENSE`](LICENSE) for details.
 
 ## Acknowledgments
 
-Special thanks to [justcallmekoko](https://github.com/justcallmekoko) for inspiring this project and the broader hardware hacking community through the [ESP32 Marauder](https://github.com/justcallmekoko/ESP32Marauder) project. Years of learning from Marauder's innovative approaches to WiFi security research have been invaluable.
+Special thanks to [justcallmekoko](https://github.com/justcallmekoko) for inspiring this project and the broader hardware hacking community through the [ESP32 Marauder](https://github.com/justcallmekoko/ESP32Marauder) project.
+
 
