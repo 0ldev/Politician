@@ -226,7 +226,7 @@ struct Config {
     uint8_t  sta_filter[6]            = {};     // Only record EAPOL from this client (0=any)
     char     ssid_filter[33]          = {};     // Only cache APs matching this SSID (empty=any)
     bool     ssid_filter_exact        = true;   // true=exact, false=substring SSID match
-    uint8_t  enc_filter_mask          = 0xFF;   // Enc types to cache (bit0=open … bit4=Ent)
+    uint8_t  enc_filter_mask          = 0xFF;   // Enc types to cache (bit0=Open … bit5=OWE)
 
     // ── Soft AP ──────────────────────────────────────────────────────────────
     const char* soft_ap_ssid          = nullptr; // AP SSID (nullptr=hidden "WiFighter")
@@ -331,6 +331,15 @@ Error injectCustomFrame(const uint8_t *payload, size_t len, uint8_t channel,
 ### Config Constants
 
 ```cpp
+// Encryption type constants (ApRecord.enc, enc_filter_mask bit index)
+#define ENC_OPEN    0   // Open — no encryption
+#define ENC_WEP     1   // WEP
+#define ENC_WPA     2   // WPA (vendor IE 00:50:F2:01)
+#define ENC_WPA2    3   // WPA2 / WPA3-Transition (RSN IE, PSK or SAE AKM)
+#define ENC_ENT     4   // 802.1X Enterprise (RSN IE, 802.1X AKM suite 1)
+#define ENC_OWE     5   // OWE — Opportunistic Wireless Encryption (AKM suite 18)
+                        // Engine skips PMKID fishing and CSA/Deauth for OWE networks.
+
 // Attack bits
 #define ATTACK_PMKID        0x01
 #define ATTACK_CSA          0x02
@@ -366,7 +375,7 @@ struct ApRecord {
     uint8_t  ssid_len;
     uint8_t  channel;
     int8_t   rssi;
-    uint8_t  enc;               // 0=Open 1=WEP 2=WPA 3=WPA2/WPA3 4=Enterprise
+    uint8_t  enc;               // ENC_OPEN=0 ENC_WEP=1 ENC_WPA=2 ENC_WPA2=3 ENC_ENT=4 ENC_OWE=5
     bool     wps_enabled;       // WPS IE present in beacon/probe-response
     bool     pmf_capable;       // MFPC — AP supports Protected Management Frames
     bool     pmf_required;      // MFPR — AP mandates PMF (pure WPA3)
@@ -375,8 +384,7 @@ struct ApRecord {
     bool     is_vht;            // 802.11ac (Wi-Fi 5) capable
     bool     is_he;             // 802.11ax (Wi-Fi 6) capable
     uint8_t  chan_width;        // Max channel width: 0=20 1=40 2=80 3=160 4=80+80 MHz
-    uint8_t  enc;               // Encryption type
-    uint8_t  total_attempts;    // Failed attack attempts against this BSSID
+    uint8_t  total_attempts;    // Failed attack attempts against this BSSID (drives exp. backoff)
     bool     captured;          // On the captured or ignore list
     uint32_t first_seen_ms;     // millis() when first observed
     uint32_t last_seen_ms;      // millis() of most recent beacon/probe-response
@@ -667,6 +675,38 @@ engine.setApFoundCallback([](const ApRecord &ap) {
 });
 ```
 
+### HE/VHT-Aware Attack Path
+
+Wi-Fi 5 (VHT) and Wi-Fi 6 (HE) networks that mandate PMF (`pmf_required = true`) cryptographically sign every management frame. Deauthentication and CSA beacon injections will be silently dropped by these clients.
+
+The engine automatically detects this condition and suppresses `ATTACK_DEAUTH` and `ATTACK_CSA` for those networks, redirecting the attack cycle to `ATTACK_PMKID` and `ATTACK_BTM` — both of which work regardless of PMF:
+
+```
+is_he && pmf_required  →  skip DEAUTH + CSA  →  PMKID fish → BTM steer
+is_vht && pmf_required →  skip DEAUTH + CSA  →  PMKID fish → BTM steer
+```
+
+No configuration required — suppression is automatic. Use `ATTACK_ALL` and the engine selects the correct strategy per AP.
+
+### Exponential Backoff for Failing Targets
+
+Each `ApCacheEntry` tracks `total_attempts` — the number of failed attack cycles against that BSSID. The PMKID throttle window doubles per failure, capped at 8 minutes:
+
+```
+throttle = base_ms << min(total_attempts, 4)   // max 16× base
+cap      = 480 000 ms (8 minutes)
+```
+
+| Attempts | Base 30s | Effective window |
+|----------|----------|-----------------|
+| 0 | 30s | 30s |
+| 1 | 30s | 60s |
+| 2 | 30s | 2 min |
+| 3 | 30s | 4 min |
+| ≥4 | 30s | 8 min (capped) |
+
+This prevents the engine wasting its attack window on chronic failures. When `has_target = true` (manual target pinned) backoff is bypassed entirely so targeted sessions always attack immediately.
+
 ### Autonomous Hunter (Score-Based Targeting)
 
 ```cpp
@@ -813,6 +853,9 @@ engine.setPacketLogger([&](const uint8_t *data, uint16_t len, int8_t rssi, uint8
 | `FuzzingAndInjection` | Custom frame injection and fuzzing |
 | `SerialStreaming` | Real-time packet streaming |
 | `StressTest` | Performance and memory testing |
+| `BtmSteering` | 802.11v BTM Request injection + PMKID combination |
+| `WpsCapture` | Passive WPS M1 device fingerprint harvesting |
+| `MsChapCapture` | Bare EAP-MSCHAPv2 credential capture (hashcat -m 5500) |
 
 ## Legal & Ethical Use
 
