@@ -29,6 +29,7 @@ jobs:
           - BtmSteering
           - MsChapCapture
           - WpsCapture
+          - KarmaResponder
 
     steps:
       - name: Checkout repository

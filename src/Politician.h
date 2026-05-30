@@ -414,6 +414,29 @@ public:
      */
     void setRogueApCallback(RogueApCb cb)           { _rogueApCb = cb; }
 
+#ifndef POLITICIAN_NO_KARMA
+    /**
+     * @brief Enable or disable the KARMA rogue AP responder at runtime.
+     *
+     * When enabled, the engine intercepts named probe requests (SSIDs != wildcard)
+     * and immediately injects a matching probe response + beacon, spoofing an open
+     * AP with that SSID. Clients configured to auto-join known networks will then
+     * associate with the engine's soft AP.
+     *
+     * @note Only effective when `cfg.karma_enabled = true` was set in `begin()`, or
+     *       when called after `begin()` to toggle dynamically.
+     * @param en  true to enable, false to disable
+     */
+    void enableKarma(bool en) { _karmaEnabled = en; }
+
+    /**
+     * @brief Sets the callback fired each time the KARMA responder echoes a probe.
+     * The record contains the client MAC, requested SSID, channel, and spoofed AP MAC.
+     * Zero overhead if not set.
+     */
+    void setKarmaCallback(KarmaCb cb) { _karmaCb = cb; }
+#endif
+
     /**
      * @brief Sets an SSID wordlist for directed probes against hidden access points.
      * When set and probe_hidden_interval_ms > 0, the engine cycles through each SSID
@@ -458,6 +481,9 @@ private:
     bool _detectWpa3Only(const uint8_t *ie, uint16_t ie_len);
     void _detectPmfFlags(const uint8_t *ie, uint16_t ie_len, bool &pmf_capable, bool &pmf_required);
     bool _detectFt(const uint8_t *ie, uint16_t ie_len);
+#ifndef POLITICIAN_NO_KARMA
+    void _sendKarmaResponse(const uint8_t *client, const char *ssid, uint8_t ssid_len, uint8_t channel);
+#endif
 
     bool       _initialized = false;
     volatile bool _active;
@@ -523,6 +549,15 @@ private:
     RogueApCb        _rogueApCb       = nullptr;
     _FpHookCb        _fpHook          = nullptr;
     WpsCb            _wpsCb           = nullptr;
+#ifndef POLITICIAN_NO_KARMA
+    KarmaCb          _karmaCb         = nullptr;
+    bool             _karmaEnabled    = false;
+    // Circular SSID dedup table — avoid spamming one client with repeated responses
+    static const int MAX_KARMA_SEEN   = 16;
+    struct KarmaSeen { uint8_t client[6]; char ssid[33]; uint32_t last_ms; };
+    KarmaSeen        _karmaSeen[MAX_KARMA_SEEN];
+    uint8_t          _karmaSeenIdx    = 0;
+#endif
 #ifndef POLITICIAN_NO_MSCHAPV2
     MsChapCb         _msChapCb        = nullptr;
     // Challenge session table: correlates server challenge (from AP) with response (from client)

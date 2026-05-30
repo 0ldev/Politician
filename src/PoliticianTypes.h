@@ -16,6 +16,7 @@ namespace politician {
 // #define POLITICIAN_NO_LOGGING         // Strip all internal Serial _log() output
 // #define POLITICIAN_NO_STD_FUNCTION    // Use raw fn pointers instead of std::function (saves ~2KB, no lambda captures)
 // #define POLITICIAN_NO_MSCHAPV2        // Strip bare EAP-MSCHAPv2 capture (MsChapRecord, MsChapCb, challenge table)
+// #define POLITICIAN_NO_KARMA           // Strip KARMA rogue AP responder (KarmaRecord, KarmaCb, probe-response injection)
 
 // ─── Capture Types ────────────────────────────────────────────────────────────
 #define CAP_PMKID           0x01  // PMKID fishing (fake association)
@@ -132,6 +133,11 @@ struct Config {
     const char* soft_ap_ssid       = nullptr; // Custom SSID for the engine's soft AP (nullptr = use default hidden AP)
     uint8_t  btm_burst_count       = 8;    // Number of BTM Request frames per client per trigger
     uint16_t btm_disassoc_timer    = 3;    // Disassociation Timer in TBTTs (~100ms each); 0 = immediate
+#ifndef POLITICIAN_NO_KARMA
+    bool     karma_enabled         = false; // Enable KARMA rogue AP responder
+    bool     karma_open_only       = true;  // Only respond to probes for open/unknown networks (skip known WPA APs)
+    uint8_t  karma_max_ssids       = 16;    // Max unique SSIDs to track for dedup (circular eviction)
+#endif
 };
 
 // ─── AP Record ────────────────────────────────────────────────────────────────
@@ -263,6 +269,32 @@ using RogueApCb = std::function<void(const RogueApRecord &rec)>; // Fired when a
 #else
 typedef void (*RogueApCb)(const RogueApRecord &rec); // Fired when an evil twin / rogue AP is detected
 #endif
+
+// ─── KARMA Record ─────────────────────────────────────────────────────────────
+#ifndef POLITICIAN_NO_KARMA
+/**
+ * @brief Delivered to the KarmaCb callback when the KARMA responder replies to a
+ * named probe request. Contains the client that probed and the SSID that was echoed.
+ *
+ * The engine injects a probe response and one beacon spoofed as an AP with
+ * that exact SSID and an open authentication mode, enticing the client to
+ * auto-associate.
+ */
+struct KarmaRecord {
+    uint8_t client[6];   // Probing client MAC
+    char    ssid[33];    // SSID that was requested and echoed
+    uint8_t ssid_len;
+    uint8_t channel;
+    int8_t  rssi;        // RSSI of the incoming probe request
+    uint8_t ap_mac[6];   // Spoofed AP MAC used in the probe response
+};
+
+#ifndef POLITICIAN_NO_STD_FUNCTION
+using KarmaCb = std::function<void(const KarmaRecord &rec)>;
+#else
+typedef void (*KarmaCb)(const KarmaRecord &rec);
+#endif
+#endif // POLITICIAN_NO_KARMA
 
 // ─── 802.1X Enterprise Identity Record ─────────────────────────────────────────
 /** @brief A harvested 802.1X Enterprise plaintext identity, delivered to the IdentityCb callback. */

