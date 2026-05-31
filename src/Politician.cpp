@@ -146,8 +146,10 @@ Error Politician::begin(const Config &cfg) {
 
         wifi_config_t ap_cfg = {};
         const char *ap_ssid = _cfg.soft_ap_ssid ? _cfg.soft_ap_ssid : "WiFighter";
-        memcpy(ap_cfg.ap.ssid, ap_ssid, strlen(ap_ssid));
-        ap_cfg.ap.ssid_len        = (uint8_t)strlen(ap_ssid);
+        size_t ap_ssid_len = strlen(ap_ssid);
+        if (ap_ssid_len > 32) ap_ssid_len = 32; // wifi_ap_config_t::ssid is uint8_t[32]
+        memcpy(ap_cfg.ap.ssid, ap_ssid, ap_ssid_len);
+        ap_cfg.ap.ssid_len        = (uint8_t)ap_ssid_len;
         ap_cfg.ap.ssid_hidden     = _cfg.soft_ap_ssid ? 0 : 1;
         ap_cfg.ap.max_connection  = 4;
         ap_cfg.ap.authmode        = WIFI_AUTH_OPEN;
@@ -573,8 +575,10 @@ void Politician::setChannelBands(bool ghz24, bool ghz5) {
 Error Politician::setTargetBySsid(const char *ssid) {
     if (!_initialized) return ERR_NOT_ACTIVE;
     uint8_t ssid_len = (uint8_t)strlen(ssid);
-    int best = -1;
-    int8_t best_rssi = INT8_MIN;
+    uint8_t found_bssid[6] = {};
+    uint8_t found_channel   = 0;
+    bool    found           = false;
+    int8_t  best_rssi       = INT8_MIN;
     if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
         for (int i = 0; i < MAX_AP_CACHE; i++) {
             if (!_apCache[i].flags.active) continue;
@@ -582,13 +586,16 @@ Error Politician::setTargetBySsid(const char *ssid) {
             if (memcmp(_apCache[i].ssid, ssid, ssid_len) != 0) continue;
             if (_apCache[i].rssi > best_rssi) {
                 best_rssi = _apCache[i].rssi;
-                best = i;
+                // Copy out before releasing lock — avoids TOCTOU with worker task
+                memcpy(found_bssid, _apCache[i].bssid, 6);
+                found_channel = _apCache[i].channel;
+                found = true;
             }
         }
         xSemaphoreGiveRecursive(_lock);
     }
-    if (best == -1) return ERR_NOT_FOUND;
-    return setTarget(_apCache[best].bssid, _apCache[best].channel);
+    if (!found) return ERR_NOT_FOUND;
+    return setTarget(found_bssid, found_channel);
 }
 
 void Politician::setAutoTarget(bool enable) {

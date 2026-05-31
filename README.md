@@ -7,6 +7,22 @@
 
 Politician is an embedded C++ library designed for WiFi security auditing on ESP32 platforms. It provides a clean, modern API for capturing WPA/WPA2/WPA3 handshakes and harvesting enterprise credentials using advanced 802.11 protocol techniques.
 
+## Migration Notes
+
+### ClientFoundCb signature change (develop)
+
+`ClientFoundCb` was changed from `(const uint8_t *bssid, const uint8_t *sta, int8_t rssi)` to `(const ClientRecord &rec)`. Update existing callbacks:
+
+```cpp
+// Before
+engine.setClientFoundCallback([](const uint8_t *bssid, const uint8_t *sta, int8_t rssi) { … });
+
+// After
+engine.setClientFoundCallback([](const ClientRecord &rec) {
+    // rec.bssid, rec.sta, rec.rssi — same data plus rand_mac, vendor, timestamps
+});
+```
+
 ## Key Capabilities
 
 - **PMKID Capture** — Extract PMKIDs via fake association without disconnecting any client
