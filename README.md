@@ -196,7 +196,22 @@ extern "C" void app_main(void) {
 Error begin(const Config &cfg = Config());
 ```
 
-Initializes the WiFi driver in promiscuous mode. Must be called before any other method. Clamps and warns on invalid Config values at startup. Use `validateConfig(cfg, reasons, maxReasons)` beforehand if you want to inspect validation issues before `begin()`.
+Initializes the WiFi driver in promiscuous mode. Must be called before any other method. Clamps and warns on invalid Config values at startup. Use `validateConfig()` beforehand to surface misconfigurations before deploying in the field:
+
+```cpp
+Config cfg;
+cfg.hop_min_dwell_ms = 400;
+cfg.hop_max_dwell_ms = 200; // wrong — min > max
+
+const char *warnings[8];
+int n = politician::validateConfig(cfg, warnings, 8);
+for (int i = 0; i < n; i++) Serial.println(warnings[i]);
+// → "hop_min_dwell_ms >= hop_max_dwell_ms — max will be clamped to min+50ms"
+
+engine.begin(cfg); // begins normally; begin() clamps automatically
+```
+
+`validateConfig()` is a free inline function in the `politician` namespace — zero allocations, zero dependencies.
 
 ### Configuration
 
@@ -658,7 +673,43 @@ Define `POLITICIAN_NO_NETWORK_LOGGER` to strip these Arduino/WiFi-backed streame
 
 ## Advanced Features
 
-### 802.11v BTM Injection
+### KARMA Rogue AP Responder
+
+When a device sends a named probe request (looking for a remembered network), the KARMA responder replies with a matching probe response and beacon advertising that SSID as an open AP, enticing the device to auto-associate.
+
+```cpp
+Config cfg;
+cfg.karma_enabled   = true;  // enable at startup
+cfg.karma_open_only = true;  // skip probes for SSIDs cached as WPA networks (default)
+engine.begin(cfg);
+
+engine.setKarmaCallback([](const KarmaRecord &rec) {
+    Serial.printf("[KARMA] echoed '%s' to %02X:%02X:%02X:%02X:%02X:%02X ch%d\n",
+                  rec.ssid,
+                  rec.client[0], rec.client[1], rec.client[2],
+                  rec.client[3], rec.client[4], rec.client[5],
+                  rec.channel);
+    // rec.ap_mac — spoofed open AP MAC (OUI 02:CA:FE + 3 random bytes)
+});
+
+// Toggle at runtime without restarting:
+engine.enableKarma(true);
+engine.enableKarma(false);
+```
+
+**Config fields:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `karma_enabled` | `false` | Enable KARMA at `begin()` |
+| `karma_open_only` | `true` | Skip probes for SSIDs already cached as WPA APs |
+| `karma_max_ssids` | `16` | Dedup table size (circular eviction, 10s suppression window) |
+
+Strip the entire feature at compile time with `-DPOLITICIAN_NO_KARMA`.
+
+> **Note:** KARMA requires the engine to be in active (transmitting) mode. The spoofed AP uses an open (no RSN) configuration; clients that require WPA will not associate.
+
+
 
 BTM (BSS Transition Management) is a Wi-Fi 802.11v mechanism that politely asks clients to roam. When a client respects it, it disconnects and reassociates — triggering a new EAPOL handshake. Combines with or replaces CSA/Deauth:
 
@@ -976,6 +1027,7 @@ beaconFlood(ssids, ssidCount, 6, 5000);
 | `BtmSteering` | 802.11v BTM Request injection + PMKID combination |
 | `WpsCapture` | Passive WPS M1 device fingerprint harvesting |
 | `MsChapCapture` | Bare EAP-MSCHAPv2 credential capture (hashcat -m 5500) |
+| `KarmaResponder` | KARMA rogue AP responder with runtime Serial toggle |
 
 ## Legal & Ethical Use
 
