@@ -36,6 +36,7 @@ engine.setClientFoundCallback([](const ClientRecord &rec) {
 - **VHT/HE Detection** — Parse 802.11ac/ax IEs to expose channel width and Wi-Fi generation per AP
 - **Device Fingerprinting** — Identify 150+ IoT/consumer brands via MAC OUI and IE signatures
 - **Export Formats** — Streaming PCAPNG (Wireshark-compatible); auxiliary HC22000 for Hashcat; Wigle CSV
+- **Passive Motion Sensing** — RSSI variance analysis detects human presence and movement via a fixed anchor AP; device-free, no mode switching, runs alongside the audit engine
 
 ## Architecture
 
@@ -52,6 +53,7 @@ The library is built around a non-blocking state machine managing channel hoppin
 | `PoliticianStress.h` | Opt-in DoS payloads (SAE flood, probe flood, beacon flood) |
 | `PoliticianProbe.h` | Opt-in PROGMEM wordlist for hidden SSID probing |
 | `PoliticianWPS.h` | Opt-in WPS M1 print helpers and bitmask constants |
+| `PoliticianSense.h` | Opt-in passive RSSI-based motion and presence sensing |
 
 ### Attack Modes
 
@@ -845,6 +847,102 @@ void loop() {
 
 
 
+### Passive Motion & Presence Sensing
+
+`PoliticianSense.h` hooks into the engine's promiscuous-mode packet stream and measures RSSI variance from a fixed anchor AP to detect human presence and motion — no additional hardware, no mode switching, no conflict with the audit engine.
+
+A human body walking between the anchor AP and the ESP32 absorbs and scatters 2.4 GHz radio waves, causing measurable fluctuations in the received beacon signal strength. `PoliticianSense` tracks variance over a configurable sliding window and fires a callback when the space transitions between quiet and active.
+
+> **Scope:** With a single ESP32 you get **presence / motion detection** — not localization. Knowing *where* in the space someone is requires multiple observation points.
+
+```cpp
+#include <Politician.h>
+#include <PoliticianSense.h>
+using namespace politician;
+
+Politician      engine;
+PoliticianSense sense;
+
+void setup() {
+    Config cfg;
+    cfg.capture_filter |= LOG_FILTER_BEACONS; // required — set before engine.begin()
+    engine.begin(cfg);
+    engine.startHopping();
+
+    // Configure tuning before anchoring
+    sense.setThreshold(6.0f);  // variance (dBm²) that triggers MOTION
+    sense.setWindowSize(32);   // samples in sliding window (~3s at 10 beacons/sec)
+    sense.setDebounce(2000);   // ms to hold MOTION before reverting to STILL
+
+    sense.setSenseCallback([](SenseEvent ev, float var) {
+        Serial.printf("[SENSE] %s  var=%.2f dBm²\n",
+                      ev == SENSE_MOTION ? "MOTION" : "STILL", var);
+    });
+
+    // Anchor to a specific AP by BSSID (most stable)
+    uint8_t anchor[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    sense.begin(engine, anchor);
+
+    // Lock to the anchor's channel for a steady ~10 beacons/sec stream
+    engine.lockChannel(6);
+}
+
+void loop() {
+    engine.tick();
+    sense.tick();
+}
+```
+
+**Anchor modes:**
+
+| Mode | Method | Notes |
+|------|--------|-------|
+| BSSID (recommended) | `sense.begin(engine, bssid)` | Most stable; survives SSID name changes |
+| SSID lookup | `sense.beginBySSID(engine, "MyRouter")` | Picks strongest BSSID if multiple match |
+| Any AP | `sense.begin(engine, nullptr)` | Aggregates all visible APs; noisier baseline |
+
+**API:**
+
+| Method | Description |
+|--------|-------------|
+| `begin(engine, bssid)` | Attach to engine; start sampling from anchor BSSID |
+| `beginBySSID(engine, ssid)` | Resolve BSSID by SSID from engine cache, then attach |
+| `end()` | Detach from engine and clear its packet logger slot |
+| `tick()` | Worker — call from `loop()` alongside `engine.tick()` |
+| `setSenseCallback(cb)` | Fired once per `SENSE_STILL` ↔ `SENSE_MOTION` transition |
+| `setPacketLogger(cb)` | Pass-through for raw-frame access alongside sensing |
+| `setThreshold(dBm²)` | Variance above which `SENSE_MOTION` fires. Range: 3–15. Default: `6.0` |
+| `setWindowSize(n)` | Sliding window depth in samples [4–64]. Default: `32` |
+| `setDebounce(ms)` | Hold `SENSE_MOTION` for this long after last spike. Default: `2000` |
+| `setStaleTimeout(ms)` | Zero variance and let debounce expire when no samples arrive for this long. Default: `10000` |
+| `getVariance()` | Current RSSI variance across the window (dBm²) |
+| `getMeanRssi()` | Mean RSSI across the window (dBm) |
+| `getState()` | `SENSE_STILL` or `SENSE_MOTION` |
+| `getTotalSamples()` | Total samples collected since `begin()` |
+| `reset()` | Clear sample window without detaching from engine |
+
+**Compile-time tuning:**
+
+```cpp
+#define POLITICIAN_SENSE_MAX_WINDOW 128  // raise maximum window depth (default: 64)
+```
+
+**Tuning guide:**
+
+| Symptom | Fix |
+|---------|-----|
+| False triggers in an empty room | Raise `setThreshold()` |
+| Real motion not detected | Lower `setThreshold()` or widen `setWindowSize()` |
+| MOTION held too long after person leaves | Lower `setDebounce()` |
+| Sparse samples / choppy data | Call `engine.lockChannel(anchorCh)` to stop hopping |
+| Flat variance regardless of movement | Move anchor AP closer or choose a less-obstructed path |
+
+> `PoliticianSense` requires `std::function` support. Do not combine with `POLITICIAN_NO_STD_FUNCTION`.
+
+> `cfg.capture_filter |= LOG_FILTER_BEACONS` must be set **before** `engine.begin()`. PoliticianSense only samples beacon frames; without this flag no data is collected. The "SDMMC ONLY!" warning in `PoliticianTypes.h` applies to high-volume SD logging — in-memory callbacks are unaffected.
+
+> `sense.setPacketLogger()` must be called **before** `sense.begin()` if you need raw frame access alongside sensing. Setting it after `begin()` is a data race with the engine worker task.
+
 ### AP Iteration and Rich Client Discovery
 
 ```cpp
@@ -1028,6 +1126,7 @@ beaconFlood(ssids, ssidCount, 6, 5000);
 | `WpsCapture` | Passive WPS M1 device fingerprint harvesting |
 | `MsChapCapture` | Bare EAP-MSCHAPv2 credential capture (hashcat -m 5500) |
 | `KarmaResponder` | KARMA rogue AP responder with runtime Serial toggle |
+| `PassiveSensing` | RSSI-based human presence and motion detection |
 
 ## Legal & Ethical Use
 
