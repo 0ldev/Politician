@@ -551,7 +551,7 @@ private:
     void _detectPmfFlags(const uint8_t *ie, uint16_t ie_len, bool &pmf_capable, bool &pmf_required);
     bool _detectFt(const uint8_t *ie, uint16_t ie_len);
 #ifndef POLITICIAN_NO_KARMA
-    void _sendKarmaResponse(const uint8_t *client, const char *ssid, uint8_t ssid_len, uint8_t channel);
+    void _sendKarmaResponse(const uint8_t *client, const char *ssid, uint8_t ssid_len, uint8_t channel, int8_t rssi);
 #endif
 
     bool       _initialized = false;
@@ -583,6 +583,7 @@ private:
     struct SsidOverride { bool active; char ssid[33]; uint8_t ssid_len; uint8_t mask; bool substring; };
     static const int MAX_SSID_OVERRIDES = 8;
     SsidOverride _ssidOverrides[MAX_SSID_OVERRIDES];
+    uint8_t      _ssidOverrideIdx = 0; ///< Circular eviction pointer for the SSID override table.
     struct EapMethodSeen { uint8_t bssid[6]; uint8_t method; };
     static const uint8_t MAX_EAP_METHODS = 8;
     EapMethodSeen _eapMethods[MAX_EAP_METHODS];
