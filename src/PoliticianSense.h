@@ -374,8 +374,25 @@ public:
 
     /**
      * @brief Detaches from the engine and clears its packet logger.
-     * Call before destroying a PoliticianSense that was attached to a still-running engine,
-     * or to hand the packet logger slot back to the user.
+     *
+     * Sets _active = false first so any _onPacket() invocation already in flight
+     * on the engine worker task will bail out immediately without touching members.
+     * Then clears the engine's packet logger slot so no further calls are dispatched.
+     *
+     * @warning This does NOT provide a hard synchronisation barrier. If the engine
+     * worker task has already passed the `if (!_active)` guard before end() writes
+     * the flag, it may still access members after end() returns. This window is
+     * narrow but real on a multi-core ESP32.
+     *
+     * Safe usage pattern when destroying from a different core/task:
+     * @code
+     *   sense.end();
+     *   delay(20); // > one engine tick — guarantees any in-flight call has returned
+     *   // now safe to destroy or reuse
+     * @endcode
+     *
+     * Calling end() from the same task/core as the engine worker (e.g. in loop())
+     * is always safe with no delay required.
      */
     void end() {
         if (_engine) {
