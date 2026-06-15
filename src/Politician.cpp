@@ -67,6 +67,7 @@ Politician::Politician()
     memset(_ownStaMac, 0, sizeof(_ownStaMac));
     memset(_ignoreList, 0, sizeof(_ignoreList));
     memset(_ssidOverrides, 0, sizeof(_ssidOverrides));
+    _ssidOverrideIdx = 0;
     memset(_eapMethods, 0, sizeof(_eapMethods));
 #ifndef POLITICIAN_NO_MSCHAPV2
     memset(_msChapSessions, 0, sizeof(_msChapSessions));
@@ -361,12 +362,15 @@ void Politician::setAttackMaskForSsid(const char *ssid, uint8_t mask, bool subst
                 return;
             }
         }
-        _ssidOverrides[0].active = true;
-        memcpy(_ssidOverrides[0].ssid, ssid, slen);
-        _ssidOverrides[0].ssid[slen] = '\0';
-        _ssidOverrides[0].ssid_len = slen;
-        _ssidOverrides[0].mask = mask;
-        _ssidOverrides[0].substring = substring;
+        // Circular eviction: overwrite the oldest entry (round-robin)
+        uint8_t evict = _ssidOverrideIdx % MAX_SSID_OVERRIDES;
+        _ssidOverrideIdx = (evict + 1) % MAX_SSID_OVERRIDES;
+        _ssidOverrides[evict].active = true;
+        memcpy(_ssidOverrides[evict].ssid, ssid, slen);
+        _ssidOverrides[evict].ssid[slen] = '\0';
+        _ssidOverrides[evict].ssid_len = slen;
+        _ssidOverrides[evict].mask = mask;
+        _ssidOverrides[evict].substring = substring;
         xSemaphoreGiveRecursive(_lock);
     }
 }
@@ -375,6 +379,7 @@ void Politician::clearAttackMaskOverrides() {
     if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
         memset(_attackOverrides, 0, sizeof(_attackOverrides));
         memset(_ssidOverrides, 0, sizeof(_ssidOverrides));
+        _ssidOverrideIdx = 0;
         xSemaphoreGiveRecursive(_lock);
     }
 }
@@ -640,7 +645,7 @@ void Politician::_recordClientForAp(const uint8_t *bssid, const uint8_t *sta, in
 }
 
 void Politician::_sendProbeRequest(const uint8_t *bssid, const char *ssid, uint8_t ssid_len) {
-    uint8_t frame[66]; int p = 0; // 34 fixed + 2 SSID IE overhead + 32 max SSID + 10 rates
+    uint8_t frame[68]; int p = 0; // 24 fixed header + 2+32 SSID IE + 2+8 Rates IE = 68 bytes max
     frame[p++] = 0x40; frame[p++] = 0x00; // FC: Probe Request
     frame[p++] = 0x00; frame[p++] = 0x00; // Duration
     memcpy(frame + p, bssid, 6); p += 6;      // DA (directed to AP)
@@ -670,7 +675,7 @@ void Politician::_sendProbeRequest(const uint8_t *bssid, const char *ssid, uint8
 // ─── KARMA Rogue AP Responder ─────────────────────────────────────────────────
 #ifndef POLITICIAN_NO_KARMA
 void Politician::_sendKarmaResponse(const uint8_t *client, const char *ssid,
-                                     uint8_t ssid_len, uint8_t channel) {
+                                     uint8_t ssid_len, uint8_t channel, int8_t rssi) {
     if (ssid_len == 0 || ssid_len > 32) return;
 
     // Dedup: skip if we already responded to this (client, ssid) pair within 10 seconds
@@ -749,7 +754,7 @@ void Politician::_sendKarmaResponse(const uint8_t *client, const char *ssid,
         memcpy(rec.ssid, ssid, ssid_len);
         rec.ssid_len = ssid_len;
         rec.channel  = channel;
-        rec.rssi     = _lastRssi;
+        rec.rssi     = rssi;
         memcpy(rec.ap_mac, ap_mac, 6);
         _karmaCb(rec);
     }
@@ -1031,7 +1036,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             // Only respond to named probes (not wildcard) from non-locally-administered MACs
             // (Optionally skip randomized MACs since they won't auto-associate)
             if (karma_ssid_len > 0) {
-                _sendKarmaResponse(hdr->addr2, karma_ssid, karma_ssid_len, _rxChannel);
+                _sendKarmaResponse(hdr->addr2, karma_ssid, karma_ssid_len, _rxChannel, rssi);
             }
         }
 #endif
