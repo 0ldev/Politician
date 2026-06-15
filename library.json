@@ -1,6 +1,6 @@
 {
   "name": "Politician",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A WiFi handshake capturing engine for ESP32. It 'shakes hands' with APs to steal PMKIDs and triggers reconnects with CSA.",
   "keywords": "wifi, security, esp32, eapol, pmkid, handshake, wardriving, 802.11, auditing, penetration-testing",
   "repository": {
