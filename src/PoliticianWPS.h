@@ -85,14 +85,20 @@ inline const char* configMethodsStr(uint16_t methods) {
 }
 
 // ─── Auth Type Flags ──────────────────────────────────────────────────────────
-static const uint16_t AUTH_OPEN         = 0x0001;
-static const uint16_t AUTH_WPAPSK       = 0x0002;
-static const uint16_t AUTH_SHARED       = 0x0004;
-static const uint16_t AUTH_WPA          = 0x0008;
-static const uint16_t AUTH_WPA2         = 0x0010;
-static const uint16_t AUTH_WPA2PSK      = 0x0020;
+/// @defgroup wps_auth WPS Authentication Type Flags
+/// Bitmask values for the WPS Authentication Type attribute (ID 0x1004).
+/// Source: WPS specification v2.0.5, Table M-10.
+/// Test WpsRecord::auth_type_flags against these masks.
+/// @{
+static const uint16_t AUTH_OPEN      = 0x0001; ///< Open (no authentication)
+static const uint16_t AUTH_WPAPSK    = 0x0002; ///< WPA Personal (PSK)
+static const uint16_t AUTH_SHARED    = 0x0004; ///< Shared Key (deprecated WEP-era)
+static const uint16_t AUTH_WPA       = 0x0008; ///< WPA Enterprise (802.1X)
+static const uint16_t AUTH_WPA2      = 0x0010; ///< WPA2 Enterprise (802.1X)
+static const uint16_t AUTH_WPA2PSK   = 0x0020; ///< WPA2 Personal (PSK)
+/// @}
 
-// ─── Print Helper ─────────────────────────────────────────────────────────────
+// ─── Print Helper ─────────────────────────────────────────────────────────────────────────────
 /** @brief Pretty-prints a WpsRecord to any Print-compatible stream (Serial, etc.). */
 template<typename TStream>
 inline void print(TStream &out, const WpsRecord &rec) {
