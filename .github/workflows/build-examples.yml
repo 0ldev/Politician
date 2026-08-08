@@ -39,3 +39,10 @@ jobs:
       - name: Build ${{ matrix.example }}
         working-directory: examples/${{ matrix.example }}
         run: pio run
+
+      # ⬇️⬇️⬇️ नया स्टेप – Artifact अपलोड करने के लिए ⬇️⬇️⬇️
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.example }}
+          path: examples/${{ matrix.example }}/.pio/build/esp32dev/firmware.bin
