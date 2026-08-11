@@ -782,6 +782,111 @@ RSNE (强安全网络元素) 解析会自动识别要求 PMF 的网络。为了�
 
 `ApRecord` 公开了 `pmf_capable` 和 `pmf_required` 属性，因此 `setTargetFilter` 回调可以做出比二进制 `skip_immune_networks` 配置项更精细的决策 —— 例如，仅针对 WPA3 转换网络（支持但非强制 PMF）。
 
+### 被动式运动与存在感应 (PoliticianSense)
+
+`PoliticianSense.h` 挂载到引擎的混杂模式数据包流上，通过测量来自固定锚点 AP 的 RSSI 方差来检测人类的存在和运动 —— 无需额外硬件，无需切换模式，且与审计引擎无任何冲突。
+
+人体在锚点 AP 与 ESP32 之间走动时会吸收和散射 2.4 GHz 无线电波，导致接收到的信标信号强度产生可测量的波动。`PoliticianSense` 在可配置的滑动窗口内跟踪方差，并在空间状态在静止与活跃之间转换时触发回调。
+
+> **范围:** 使用单个 ESP32，您只能获得 **存在/运动检测**，而无法进行定位。要知道人在空间中的具体位置，需要多个观测点。
+
+```cpp
+#include <Politician.h>
+#include <PoliticianSense.h>
+using namespace politician;
+
+Politician      engine;
+PoliticianSense sense;
+
+void setup() {
+    Config cfg;
+    cfg.capture_filter |= LOG_FILTER_BEACONS; // 必需 — 在 engine.begin() 之前设置
+    engine.begin(cfg);
+    engine.startHopping();
+
+    // 在绑定锚点前配置参数
+    sense.setThreshold(6.0f);  // 触发“运动 (MOTION)”的方差阈值 (dBm²)
+    sense.setWindowSize(32);   // 滑动窗口的样本数 (10 个信标/秒时约 3 秒)
+    sense.setDebounce(2000);   // 保持“运动”状态直到恢复为“静止”的延迟时间 (ms)
+
+    sense.setSenseCallback([](SenseEvent ev, float var) {
+        Serial.printf("[SENSE] %s  var=%.2f dBm²\n",
+                      ev == SENSE_MOTION ? "MOTION" : "STILL", var);
+    });
+
+    // 通过 BSSID 绑定到特定 AP 锚点 (最稳定)
+    uint8_t anchor[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    sense.begin(engine, anchor);
+
+    // 锁定到锚点所在的信道，以获得稳定的大约 10 次/秒的信标流
+    engine.lockChannel(6);
+}
+
+void loop() {
+    engine.tick();
+    sense.tick();
+}
+```
+
+**锚点模式:**
+
+| 模式 | 方法 | 说明 |
+|------|--------|-------|
+| BSSID (推荐) | `sense.begin(engine, bssid)` | 最稳定；不受 SSID 名称更改的影响 |
+| SSID 查找 | `sense.beginBySSID(engine, "MyRouter")` | 如果有多个匹配项，则选择信号最强的 BSSID |
+| 任意 AP | `sense.begin(engine, nullptr)` | 聚合所有可见的 AP；基线噪声较大 |
+
+**API 参考:**
+
+| 方法 | 描述 |
+|--------|-------------|
+| `begin(engine, bssid)` | 附加到引擎；开始从锚点 BSSID 采样 |
+| `beginBySSID(engine, ssid)` | 从引擎缓存中通过 SSID 解析 BSSID，然后附加 |
+| `end()` | 从引擎分离并清除其数据包日志记录器插槽 |
+| `tick()` | 工作函数 — 在 `loop()` 中与 `engine.tick()` 一起调用 |
+| `setSenseCallback(cb)` | 每次在 `SENSE_STILL` ↔ `SENSE_MOTION` 之间转换时触发一次 |
+| `setPacketLogger(cb)` | 传递函数，用于在感应的同时访问原始数据包帧 |
+| `setThreshold(dBm²)` | 触发 `SENSE_MOTION` 的方差阈值。范围: 3–15。默认值: `6.0` |
+| `setWindowSize(n)` | 滑动窗口的样本深度 [4–64]。默认值: `32` |
+| `setDebounce(ms)` | 在最后一次尖峰后保持 `SENSE_MOTION` 的时间。默认值: `2000` |
+| `setStaleTimeout(ms)` | 当此时间内没有样本到达时，将方差归零并让防抖失效。默认值: `10000` |
+| `getVariance()` | 窗口内当前的 RSSI 方差 (dBm²) |
+| `getMeanRssi()` | 窗口内的平均 RSSI (dBm) |
+| `getState()` | 当前状态为 `SENSE_STILL` 或 `SENSE_MOTION` |
+| `getTotalSamples()` | 自 `begin()` 以来收集的总样本数 |
+| `reset()` | 清除样本窗口而不从引擎分离 |
+
+**编译时调优:**
+
+```cpp
+#define POLITICIAN_SENSE_MAX_WINDOW 128  // 提高最大窗口深度 (默认: 64)
+```
+
+**调优指南:**
+
+| 症状 | 修复方法 |
+|---------|-----|
+| 空房间内发生误触发 | 提高 `setThreshold()` |
+| 无法检测到真实的运动 | 降低 `setThreshold()` 或扩大 `setWindowSize()` |
+| 人离开后“运动”状态保持太久 | 降低 `setDebounce()` |
+| 样本稀疏 / 数据不连贯 | 调用 `engine.lockChannel(anchorCh)` 停止跳频 |
+| 无论是否运动方差都保持平稳 | 将锚点 AP 移近，或选择障碍物较少的路径 |
+
+> `PoliticianSense` 需要 `std::function` 支持。不要与 `POLITICIAN_NO_STD_FUNCTION` 组合使用。
+
+> `cfg.capture_filter |= LOG_FILTER_BEACONS` 必须在 **`engine.begin()` 之前**设置。PoliticianSense 仅对信标帧进行采样；如果没有此标志，则不会收集任何数据。`PoliticianTypes.h` 中的 "SDMMC ONLY!" 警告适用于高强度的 SD 卡日志记录 —— 内存中的回调不受影响。
+
+> 如果您在感应的同时需要访问原始帧，必须在 **`sense.begin()` 之前**调用 `sense.setPacketLogger()`。在 `begin()` 之后设置会导致与引擎工作任务的数据竞争。
+
+### AP 迭代与丰富客户端发现
+
+```cpp
+engine.forEachAp([](const ApRecord &ap, void *) {
+    Serial.printf("%s beacons=%lu captures=%u\n", ap.ssid, (unsigned long)ap.beacon_count, ap.capture_count);
+    return true; // 返回 false 提前中止迭代
+}, nullptr);
+```
+
 ## 示例
 
 库中包含展示各种用例的完整示例：
