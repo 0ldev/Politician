@@ -12,9 +12,8 @@
  *   #include "PoliticianWPS.h"   // Add this line
  *
  *   engine.setWpsCallback([](const WpsRecord &rec) {
- *           char methodsBuf[64];
- *           Serial.printf("WPS: %s | %s | %s\n",
- *           rec.device_name, rec.manufacturer, PoliticianWPS::configMethodsStr(rec.config_methods, methodsBuf, sizeof(methodsBuf)));
+ *       Serial.printf("[WPS] %s by %s (%s)\n",
+ *           rec.device_name, rec.manufacturer, PoliticianWPS::configMethodsStr(rec.config_methods));
  *       PoliticianWPS::print(Serial, rec);
  *   });
  *
@@ -83,6 +82,12 @@ inline const char* configMethodsStr(uint16_t methods, char *buf, size_t bufSz) {
     size_t n = strlen(buf);
     if (n > 0 && buf[n - 1] == ' ') buf[n - 1] = '\0';
     return buf;
+}
+
+/** @brief Compatibility overload using a static buffer (not thread-safe). */
+inline const char* configMethodsStr(uint16_t methods) {
+    static char buf[64];
+    return configMethodsStr(methods, buf, sizeof(buf));
 }
 
 // ─── Auth Type Flags ──────────────────────────────────────────────────────────
