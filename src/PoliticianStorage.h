@@ -8,6 +8,16 @@
 #include <FS.h>
 #include <Preferences.h>
 #include <string>
+#ifndef POLITICIAN_NO_NETWORK_LOGGER
+#ifdef ARDUINO
+#include <WiFiClient.h>
+#if __has_include(<WiFiUdp.h>)
+#include <WiFiUdp.h>
+#elif __has_include(<WiFiUDP.h>)
+#include <WiFiUDP.h>
+#endif
+#endif
+#endif
 #include "Politician.h"
 #include "PoliticianFormat.h"
 
@@ -15,6 +25,22 @@ namespace politician {
 namespace storage {
 
 namespace detail {
+#ifndef POLITICIAN_NO_STD_FUNCTION
+using TimestampCb = std::function<const char *()>;
+#else
+using TimestampCb = const char *(*)();
+#endif
+
+inline TimestampCb &_timestampCb() {
+    static TimestampCb cb;
+    return cb;
+}
+inline const char *_timestamp() {
+    auto &cb = _timestampCb();
+    const char *ts = cb ? cb() : nullptr;
+    return ts ? ts : "1970-01-01 00:00:00";
+}
+
 /**
  * @brief Writes a CSV-safe quoted field into output (RFC 4180).
  * Wraps in double-quotes and escapes embedded double-quotes by doubling them.
@@ -30,6 +56,28 @@ inline void escapeCsvField(const char *input, char *output, size_t maxLen) {
     output[out] = '\0';
 }
 } // namespace detail
+
+/**
+ * @brief Sets a global timestamp provider called by all CSV loggers when no
+ * explicit timestamp string is supplied.
+ *
+ * The callback should return a pointer to a static or long-lived buffer with a
+ * datetime string in Wigle CSV format: "YYYY-MM-DD HH:MM:SS". It is called
+ * once per log entry.
+ *
+ * @code
+ * // NTP example
+ * storage::setTimestampProvider([]() -> const char* {
+ *     static char buf[20];
+ *     time_t now = time(nullptr);
+ *     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", localtime(&now));
+ *     return buf;
+ * });
+ * @endcode
+ */
+inline void setTimestampProvider(detail::TimestampCb cb) {
+    detail::_timestampCb() = cb;
+}
 
 /**
  * @brief Helper for writing HandshakeRecords and raw packets to a standard PCAPNG file.
@@ -55,9 +103,17 @@ public:
      * @param path The file path (e.g., "/captures.pcapng")
      * @return true if the file was opened successfully
      */
-    bool open(fs::FS &fs, const char *path) {
+    bool open(fs::FS &fs, const char *path, uint32_t maxBytes = 0) {
         if (_open) close();
         _fs = &fs;
+        _maxBytes = maxBytes;
+        _fileIdx = 0;
+        if (path) {
+            strncpy(_basePath, path, sizeof(_basePath) - 1);
+            _basePath[sizeof(_basePath) - 1] = '\0';
+        } else {
+            _basePath[0] = '\0';
+        }
 
         bool isNew = !fs.exists(path);
         if (!isNew) {
@@ -83,6 +139,8 @@ public:
      */
     bool write(const HandshakeRecord &rec) {
         if (!_open) return false;
+        _checkRotate();
+        if (!_open) return false;
         uint8_t buf[512];
         size_t len = format::writePcapngRecord(rec, buf, sizeof(buf));
         if (len > 0) { _file.write(buf, len); _file.flush(); }
@@ -94,6 +152,8 @@ public:
      * @return true if data was written, false if the logger is not open or serialization failed
      */
     bool writePacket(const uint8_t *payload, uint16_t len, int8_t rssi, uint8_t channel, uint32_t ts_usec) {
+        if (!_open) return false;
+        _checkRotate();
         if (!_open) return false;
         uint8_t buf[2500]; // Max 802.11 frame is 2346 bytes
         size_t wlen = format::writePcapngPacket(payload, len, rssi, channel, ts_usec, buf, sizeof(buf));
@@ -131,9 +191,36 @@ public:
     }
 
 private:
+    void _checkRotate() {
+        if (!_open || _maxBytes == 0) return;
+        if ((uint32_t)_file.size() < _maxBytes) return;
+        _file.close();
+        _fileIdx++;
+        char rotPath[80];
+        const char *dot = strrchr(_basePath, '.');
+        if (dot) {
+            size_t base_len = (size_t)(dot - _basePath);
+            snprintf(rotPath, sizeof(rotPath), "%.*s_%02u%s",
+                     (int)base_len, _basePath, _fileIdx, dot);
+        } else {
+            snprintf(rotPath, sizeof(rotPath), "%s_%02u", _basePath, _fileIdx);
+        }
+        _file = _fs->open(rotPath, FILE_WRITE);
+        if (_file) {
+            uint8_t hdr[48];
+            size_t hl = format::writePcapngGlobalHeader(hdr);
+            _file.write(hdr, hl);
+        } else {
+            _open = false;
+        }
+    }
+
     fs::FS  *_fs;
     fs::File _file;
     bool     _open;
+    uint32_t _maxBytes = 0;
+    char     _basePath[64] = {};
+    uint8_t  _fileIdx = 0;
 };
 
 /**
@@ -224,7 +311,7 @@ public:
         char line[256];
         snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%s,%s,%s,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
                  rec.bssid[0], rec.bssid[1], rec.bssid[2], rec.bssid[3], rec.bssid[4], rec.bssid[5],
-                 ssidEscaped, _authStr(rec.enc), timestamp ? timestamp : "1970-01-01 00:00:00",
+                 ssidEscaped, _authStr(rec.enc), timestamp ? timestamp : detail::_timestamp(),
                  rec.channel, rec.rssi, lat, lon, alt, acc);
 
         file.println(line);
@@ -258,7 +345,7 @@ public:
         char line[256];
         snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%s,%s,%s,%d,%d,%.6f,%.6f,%.1f,%.1f,WIFI",
                  ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5],
-                 ssidEscaped, _authStr(ap.enc), timestamp ? timestamp : "1970-01-01 00:00:00",
+                 ssidEscaped, _authStr(ap.enc), timestamp ? timestamp : detail::_timestamp(),
                  ap.channel, ap.rssi, lat, lon, alt, acc);
 
         file.println(line);
@@ -300,24 +387,26 @@ private:
  */
 class EnterpriseCsvLogger {
 public:
-    static bool append(fs::FS &fs, const char *path, const EapIdentityRecord &rec) {
+    static bool append(fs::FS &fs, const char *path, const EapIdentityRecord &rec,
+                       const char *timestamp = nullptr) {
         bool isNew = !fs.exists(path);
         
         fs::File file = fs.open(path, FILE_APPEND);
         if (!file) return false;
 
         if (isNew) {
-            file.println("Enterprise BSSID,Client MAC,Plaintext Identity,Channel,RSSI");
+            file.println("Enterprise BSSID,Client MAC,Plaintext Identity,EAP Method,FirstSeen,Channel,RSSI");
         }
 
         char identityEscaped[136]; // 64 chars worst-case doubled + 2 quotes + NUL
         detail::escapeCsvField(rec.identity, identityEscaped, sizeof(identityEscaped));
 
         char line[256];
-        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%02X:%02X:%02X:%02X:%02X:%02X,%s,%d,%d",
+        snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X,%02X:%02X:%02X:%02X:%02X:%02X,%s,%u,%s,%d,%d",
                  rec.bssid[0], rec.bssid[1], rec.bssid[2], rec.bssid[3], rec.bssid[4], rec.bssid[5],
                  rec.client[0], rec.client[1], rec.client[2], rec.client[3], rec.client[4], rec.client[5],
-                 identityEscaped, rec.channel, rec.rssi);
+                 identityEscaped, rec.eap_method, timestamp ? timestamp : detail::_timestamp(),
+                 rec.channel, rec.rssi);
 
         file.println(line);
         file.flush();
@@ -416,6 +505,97 @@ public:
         _prefs.remove("bssids");
     }
 };
+
+// Gate the network loggers — they require WiFi.h which may not be available in all environments
+#ifndef POLITICIAN_NO_NETWORK_LOGGER
+#ifdef ARDUINO
+
+/**
+ * @brief Streams HandshakeRecords as raw PCAPNG data over an existing TCP connection.
+ *
+ * Designed for wardrive deployments where SD is unavailable but a laptop on the
+ * same network can run Wireshark with `-i TCP@<ip>:<port>` or a raw receiver.
+ */
+class TcpStreamLogger {
+public:
+    TcpStreamLogger() : _client(nullptr), _open(false) {}
+
+    bool connect(WiFiClient &client) {
+        if (!client.connected()) return false;
+        _client = &client;
+        uint8_t hdr[48];
+        size_t hl = format::writePcapngGlobalHeader(hdr);
+        _client->write(hdr, hl);
+        _open = true;
+        return true;
+    }
+
+    bool write(const HandshakeRecord &rec) {
+        if (!_open || !_client || !_client->connected()) { _open = false; return false; }
+        uint8_t buf[512];
+        size_t len = format::writePcapngRecord(rec, buf, sizeof(buf));
+        if (len > 0) { _client->write(buf, len); return true; }
+        return false;
+    }
+
+    void close() {
+        if (_open && _client) { _client->stop(); }
+        _open = false;
+        _client = nullptr;
+    }
+
+    bool isConnected() const { return _open && _client && _client->connected(); }
+
+private:
+    WiFiClient *_client;
+    bool        _open;
+};
+
+/**
+ * @brief Sends HandshakeRecords as PCAPNG Enhanced Packet Blocks over UDP.
+ *
+ * UDP datagrams have a 1472-byte payload limit on typical networks. Records that
+ * exceed this limit are silently dropped. Suitable for LAN-local collection servers
+ * where packet loss is acceptable and TCP session management is undesirable.
+ */
+class UdpStreamLogger {
+public:
+    UdpStreamLogger() : _udp(nullptr), _host(nullptr), _port(0), _open(false) {}
+
+    bool begin(WiFiUDP &udp, const char *host, uint16_t port) {
+        _udp = &udp;
+        _host = host;
+        _port = port;
+        _open = true;
+        return true;
+    }
+
+    bool write(const HandshakeRecord &rec) {
+        if (!_open || !_udp) return false;
+        uint8_t buf[512];
+        size_t len = format::writePcapngRecord(rec, buf, sizeof(buf));
+        if (len == 0 || len > 1472) return false;
+        _udp->beginPacket(_host, _port);
+        _udp->write(buf, len);
+        return _udp->endPacket() != 0;
+    }
+
+    void close() {
+        _open = false;
+        _udp = nullptr;
+    }
+
+    bool isOpen() const { return _open; }
+
+private:
+    WiFiUDP    *_udp;
+    const char *_host;
+    uint16_t    _port;
+    bool        _open;
+};
+
+#endif // ARDUINO
+#endif // POLITICIAN_NO_NETWORK_LOGGER
 
 } // namespace storage
 } // namespace politician

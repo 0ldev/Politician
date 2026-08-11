@@ -2,9 +2,9 @@ name: Build Examples
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, develop]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, develop]
 
 jobs:
   build:
@@ -15,14 +15,21 @@ jobs:
       matrix:
         example:
           - AutoEnterpriseHunter
+          - AutonomousHunter
+          - DeviceFingerprinting
           - DynamicControl
           - EnterpriseAuditing
           - ExportFormats
+          - FuzzingAndInjection
           - SerialStreaming
           - StorageAndNVS
           - StressTest
           - TargetedAuditing
           - WigleIntegration
+          - BtmSteering
+          - MsChapCapture
+          - WpsCapture
+          - KarmaResponder
 
     steps:
       - name: Checkout repository
@@ -35,6 +42,13 @@ jobs:
 
       - name: Install PlatformIO
         run: pip install platformio intelhex
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('**/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
 
       - name: Build ${{ matrix.example }}
         working-directory: examples/${{ matrix.example }}

@@ -1,4 +1,7 @@
 #include "PoliticianStress.h"
+#ifdef ARDUINO
+#include <Arduino.h>
+#endif
 #include "esp_wifi.h"
 #include "esp_timer.h"
 #include "esp_random.h"
@@ -70,5 +73,47 @@ void probeRequestFlood(uint32_t count) {
     }
 }
 
+
+void beaconFlood(const char **ssids, uint8_t ssidCount,
+                 uint8_t channel, uint32_t durationMs) {
+    if (!ssids || ssidCount == 0 || durationMs == 0) return;
+    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+
+    uint8_t frame[128];
+    uint32_t start = millis();
+    uint32_t seq = 0;
+
+    while (millis() - start < durationMs) {
+        const char *ssid = ssids[seq % ssidCount];
+        uint8_t ssid_len = (uint8_t)strnlen(ssid, 32);
+
+        uint8_t mac[6];
+        uint32_t r1 = esp_random(), r2 = esp_random();
+        mac[0] = 0x02; mac[1] = r1 & 0xFF; mac[2] = (r1 >> 8) & 0xFF;
+        mac[3] = (r1 >> 16) & 0xFF; mac[4] = r2 & 0xFF; mac[5] = (r2 >> 8) & 0xFF;
+
+        uint8_t p = 0;
+        frame[p++] = 0x80; frame[p++] = 0x00;
+        frame[p++] = 0x00; frame[p++] = 0x00;
+        memset(frame + p, 0xFF, 6); p += 6;
+        memcpy(frame + p, mac, 6); p += 6;
+        memcpy(frame + p, mac, 6); p += 6;
+        frame[p++] = (uint8_t)((seq & 0xF) << 4);
+        frame[p++] = (uint8_t)(seq >> 4);
+        seq++;
+        memset(frame + p, 0, 8); p += 8;
+        frame[p++] = 0x64; frame[p++] = 0x00;
+        frame[p++] = 0x21; frame[p++] = 0x04;
+        frame[p++] = 0x00; frame[p++] = ssid_len;
+        memcpy(frame + p, ssid, ssid_len); p += ssid_len;
+        frame[p++] = 0x01; frame[p++] = 0x08;
+        const uint8_t rates[] = {0x82,0x84,0x8B,0x96,0x24,0x30,0x48,0x6C};
+        memcpy(frame + p, rates, 8); p += 8;
+        frame[p++] = 0x03; frame[p++] = 0x01; frame[p++] = channel;
+
+        esp_wifi_80211_tx(WIFI_IF_AP, frame, p, false);
+        delay(5);
+    }
+}
 } // namespace stress
 } // namespace politician
