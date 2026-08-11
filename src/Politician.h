@@ -561,6 +561,7 @@ private:
     bool       _hopping;
     volatile bool _channelTrafficSeen;
     uint32_t   _lastHopMs;
+    uint32_t   _lastDiagMs;
     int8_t     _lastRssi;
     uint8_t    _hopIndex;
     uint8_t    _attackMask;

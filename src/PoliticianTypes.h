@@ -95,7 +95,9 @@ enum Error {
     ERR_ALREADY_CAPTURED = 4,
     ERR_NOT_FOUND = 5,
     /** Returned by begin() when all POLITICIAN_MAX_INSTANCES slots are occupied. */
-    ERR_MAX_INSTANCES = 6
+    ERR_MAX_INSTANCES = 6,
+    ERR_INVALID_ARG = 7,
+    ERR_QUEUE_FULL = 8
 };
 
 /**
