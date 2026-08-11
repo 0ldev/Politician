@@ -1363,7 +1363,6 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                 _fishState = FISH_CSA_WAIT;
                 _csaSecondBurstSent = false;
                 if (effMask & ATTACK_CSA) _sendCsaBurst();
-                static const uint8_t zero_mac[6] = {};
                 const uint8_t *known_sta = (memcmp(_fishSta, zero_mac, 6) != 0) ? _fishSta : nullptr;
                 _csaFallbackMs = 0;
                 if (_disconnectStrategy == STRATEGY_SIMULTANEOUS) {
