@@ -6,6 +6,7 @@
 #include <freertos/task.h>
 #include <freertos/ringbuf.h>
 #include <freertos/semphr.h>
+#include <freertos/portmacro.h>
 #include "PoliticianTypes.h"
 
 namespace politician {
@@ -531,12 +532,17 @@ private:
     static void _workerTask(void *pvParameters);
     /** Per-process instance registry; populated by begin(), cleared by stop(). */
     static Politician *_instances[POLITICIAN_MAX_INSTANCES];
+    static portMUX_TYPE _instanceMux;
     /** Set to true after the first successful begin() so subsequent calls skip WiFi driver init. */
     static bool        _wifiInitialized;
 
     RingbufHandle_t _rb = nullptr;
     TaskHandle_t    _task = nullptr;
+    TaskHandle_t    _stopWaiter = nullptr;
     SemaphoreHandle_t _lock = nullptr;
+    volatile bool _shutdownRequested = true;
+    volatile bool _workerExited = true;
+    volatile uint32_t _isrUsers = 0;
 
     void _handleFrame(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuous_pkt_type_t type);
     void _handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload, uint16_t len, int8_t rssi);
