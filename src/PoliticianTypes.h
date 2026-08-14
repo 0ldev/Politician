@@ -365,6 +365,28 @@ typedef void (*KarmaCb)(const KarmaRecord &rec);
 #endif
 #endif // POLITICIAN_NO_KARMA
 
+// ─── ESP-NOW Record ───────────────────────────────────────────────────────────
+#ifndef POLITICIAN_NO_ESPNOW
+/**
+ * @brief Delivered to the EspNowCb callback when an ESP-NOW vendor-specific action frame is captured.
+ */
+struct EspNowRecord {
+    uint8_t  src[6];          ///< Source MAC address (transmitter)
+    uint8_t  dst[6];          ///< Destination MAC address (receiver or broadcast)
+    uint8_t  channel;         ///< Channel on which the frame was captured
+    int8_t   rssi;            ///< Signal strength of the frame (dBm)
+    uint32_t ts_usec;         ///< RX timestamp in microseconds
+    const uint8_t* payload;   ///< Pointer to the ESP-NOW payload (internal buffer, do not free)
+    uint16_t length;          ///< Length of the ESP-NOW payload
+};
+
+#ifndef POLITICIAN_NO_STD_FUNCTION
+using EspNowCb = std::function<void(const EspNowRecord &rec)>;
+#else
+typedef void (*EspNowCb)(const EspNowRecord &rec);
+#endif
+#endif // POLITICIAN_NO_ESPNOW
+
 // ─── 802.1X Enterprise Identity Record ─────────────────────────────────────────
 // EAP method constants (RFC 3748 / RFC 5281)
 static const uint8_t EAP_METHOD_IDENTITY  = 0x01;  ///< EAP Identity (always 0x01 for harvested records)
