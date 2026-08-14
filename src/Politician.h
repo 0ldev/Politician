@@ -161,6 +161,8 @@ public:
      * @brief Full engine teardown. Aborts any in-progress attack, clears the
      *        target, stops hopping, and disables frame processing in one call.
      *        Use this instead of combining stopHopping() + clearTarget() + setActive(false).
+    *        If called by the worker or one of its callbacks, shutdown is marked and
+    *        resource cleanup is deferred; call stop() again after the callback returns.
      */
     void    stop();
 

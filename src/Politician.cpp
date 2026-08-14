@@ -199,8 +199,7 @@ Error Politician::begin(const Config &cfg) {
     if (esp_wifi_set_config(WIFI_IF_AP, &ap_cfg) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
 
     esp_wifi_get_mac(WIFI_IF_STA, _ownStaMac);
-    _log("[WiFi] STA MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
-        _ownStaMac[0], _ownStaMac[1], _ownStaMac[2],
+    _log("[WiFi] STA MAC: XX:XX:XX:%02X:%02X:%02X\n",
         _ownStaMac[3], _ownStaMac[4], _ownStaMac[5]);
 
     if (esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
@@ -337,6 +336,11 @@ void Politician::stop() {
     }
 
     while (_isrUsers != 0) vTaskDelay(1);
+
+    if (_task && xTaskGetCurrentTaskHandle() == _task) {
+        _log("[WiFi] stop() called by worker; cleanup deferred until the callback returns\n");
+        return;
+    }
 
     if (_task) {
         _stopWaiter = xTaskGetCurrentTaskHandle();
@@ -1004,6 +1008,7 @@ void Politician::_workerTask(void *pvParameters) {
         }
     }
     self->_workerExited = true;
+    self->_task = nullptr;
     if (self->_stopWaiter) xTaskNotifyGive(self->_stopWaiter);
     vTaskDelete(nullptr);
 }
