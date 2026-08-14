@@ -1058,6 +1058,35 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         return;
     }
 
+#ifndef POLITICIAN_NO_ESPNOW
+    if (subtype == MGMT_SUB_ACTION) {
+        if (_espNowCb != nullptr && len >= 15) {
+            if (payload[0] == 0x7F &&
+                payload[1] == 0x18 && payload[2] == 0xFE && payload[3] == 0x34 &&
+                payload[8] == 0xDD &&
+                payload[10] == 0x18 && payload[11] == 0xFE && payload[12] == 0x34 &&
+                payload[13] == 0x04 && payload[14] == 0x01) {
+                    const uint16_t bodyOffset = 15;
+                    const uint16_t elementBodyLength = payload[9] >= 5 ? payload[9] - 5 : 0;
+                    const uint16_t availableBodyLength = len - bodyOffset;
+                    const uint16_t bodyLength = elementBodyLength < availableBodyLength
+                                                    ? elementBodyLength
+                                                    : availableBodyLength;
+                    EspNowRecord rec;
+                    memcpy(rec.src, hdr->addr2, 6);
+                    memcpy(rec.dst, hdr->addr1, 6);
+                    rec.channel = _rxChannel;
+                    rec.rssi    = rssi;
+                    rec.ts_usec = (uint32_t)esp_timer_get_time();
+                    rec.payload = payload + bodyOffset;
+                    rec.length  = bodyLength;
+                    _espNowCb(rec);
+            }
+        }
+        return;
+    }
+#endif
+
     // Parse both Beacons and Probe Responses.
     // Sniffing Probe Responses automatically enables Active Decloaking
     // of Hidden Networks when clients reconnect following a CSA/Deauth attack.
