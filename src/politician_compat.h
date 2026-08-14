@@ -1,6 +1,8 @@
 #pragma once
 
-#ifdef ARDUINO
+#if defined(POLITICIAN_HOST_TEST)
+    #include <stdint.h>
+#elif defined(ARDUINO)
     #include <Arduino.h>
 #else
     #include <esp_timer.h>
