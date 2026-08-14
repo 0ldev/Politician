@@ -79,6 +79,10 @@ Politician::Politician()
 #endif
 }
 
+Politician::~Politician() {
+    stop();
+}
+
 // ─── Logging ─────────────────────────────────────────────────────────────────
 void Politician::_log(const char *fmt, ...) {
 #ifndef POLITICIAN_NO_LOGGING
@@ -98,6 +102,12 @@ void Politician::_log(const char *fmt, ...) {
 
 // ─── begin() ─────────────────────────────────────────────────────────────────
 Error Politician::begin(const Config &cfg) {
+    if (cfg.smart_hopping && cfg.hop_min_dwell_ms > UINT16_MAX - 50) {
+        return ERR_INVALID_ARG;
+    }
+
+    if (_initialized) stop();
+
     _cfg = cfg;
 
     // ── Register this instance in the shared instance registry ───────────────
@@ -123,7 +133,7 @@ Error Politician::begin(const Config &cfg) {
     if (_cfg.smart_hopping && _cfg.hop_min_dwell_ms >= _cfg.hop_max_dwell_ms) {
         _log("[Config] WARNING: hop_min_dwell_ms (%u) >= hop_max_dwell_ms (%u); clamping max to min+50ms\n",
              _cfg.hop_min_dwell_ms, _cfg.hop_max_dwell_ms);
-        _cfg.hop_max_dwell_ms = _cfg.hop_min_dwell_ms + 50;
+        _cfg.hop_max_dwell_ms = static_cast<uint16_t>(_cfg.hop_min_dwell_ms + 50);
     }
     if (_cfg.fish_timeout_ms < 500) {
         _log("[Config] WARNING: fish_timeout_ms (%u) < 500ms; clamping to 500ms\n", _cfg.fish_timeout_ms);
@@ -278,6 +288,22 @@ void Politician::stopHopping() {
 }
 
 void Politician::stop() {
+    for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
+        if (_instances[i] == this) {
+            _instances[i] = nullptr;
+            break;
+        }
+    }
+
+    _active = false;
+    if (_task) {
+        vTaskDelete(_task);
+        _task = nullptr;
+    }
+    if (_rb) {
+        vRingbufferDelete(_rb);
+        _rb = nullptr;
+    }
     if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
         if (_fishState != FISH_IDLE) {
             esp_wifi_disconnect();
@@ -292,12 +318,9 @@ void Politician::stop() {
         _active           = false;
         xSemaphoreGiveRecursive(_lock);
     }
-    // Deregister from the shared instance registry so the ISR skips this instance.
-    for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
-        if (_instances[i] == this) {
-            _instances[i] = nullptr;
-            break;
-        }
+    if (_lock) {
+        vSemaphoreDelete(_lock);
+        _lock = nullptr;
     }
     _initialized = false;
     _log("[WiFi] Engine stopped\n");
@@ -1057,6 +1080,29 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         }
         return;
     }
+
+#ifndef POLITICIAN_NO_ESPNOW
+    if (subtype == MGMT_SUB_ACTION) {
+        if (_espNowCb && len >= 15 && payload[0] == 0x7F &&
+            payload[1] == 0x18 && payload[2] == 0xFE && payload[3] == 0x34 &&
+            payload[8] == 0xDD && payload[10] == 0x18 && payload[11] == 0xFE &&
+            payload[12] == 0x34 && payload[13] == 0x04 && payload[14] == 0x01) {
+            const uint16_t bodyOffset = 15;
+            const uint16_t advertisedLength = payload[9] >= 5 ? payload[9] - 5 : 0;
+            const uint16_t availableLength = len - bodyOffset;
+            EspNowRecord rec;
+            memcpy(rec.src, hdr->addr2, 6);
+            memcpy(rec.dst, hdr->addr1, 6);
+            rec.channel = _rxChannel;
+            rec.rssi = rssi;
+            rec.ts_usec = static_cast<uint32_t>(esp_timer_get_time());
+            rec.payload = payload + bodyOffset;
+            rec.length = advertisedLength < availableLength ? advertisedLength : availableLength;
+            _espNowCb(rec);
+        }
+        return;
+    }
+#endif
 
     // Parse both Beacons and Probe Responses.
     // Sniffing Probe Responses automatically enables Active Decloaking

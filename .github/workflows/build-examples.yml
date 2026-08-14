@@ -30,6 +30,7 @@ jobs:
           - MsChapCapture
           - WpsCapture
           - KarmaResponder
+          - EspNowCapture
 
     steps:
       - name: Checkout repository

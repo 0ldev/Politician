@@ -72,6 +72,7 @@ typedef struct {
 #define MGMT_SUB_AUTH       0xB0
 #define MGMT_SUB_DISASSOC   0xA0
 #define MGMT_SUB_DEAUTH     0xC0
+#define MGMT_SUB_ACTION     0xD0
 
 // ─── EAPOL ────────────────────────────────────────────────────────────────────
 #define EAPOL_LLC_OFFSET    0
@@ -103,6 +104,7 @@ typedef struct {
 class Politician {
 public:
     Politician();
+    ~Politician();
 
     /**
      * @brief Initializes the WiFi driver in promiscuous mode.
@@ -463,6 +465,11 @@ public:
      */
     void setWpsCallback(WpsCb cb)               { _wpsCb = cb; }
 
+#ifndef POLITICIAN_NO_ESPNOW
+    /** @brief Sets the callback for captured ESP-NOW vendor-specific action frames. */
+    void setEspNowCallback(EspNowCb cb)         { _espNowCb = cb; }
+#endif
+
 #ifndef POLITICIAN_NO_MSCHAPV2
     /**
      * @brief Sets the callback fired on a bare EAP-MSCHAPv2 challenge/response exchange.
@@ -627,6 +634,9 @@ private:
     RogueApCb        _rogueApCb       = nullptr;
     _FpHookCb        _fpHook          = nullptr;
     WpsCb            _wpsCb           = nullptr;
+#ifndef POLITICIAN_NO_ESPNOW
+    EspNowCb         _espNowCb        = nullptr;
+#endif
 #ifndef POLITICIAN_NO_KARMA
     KarmaCb          _karmaCb         = nullptr;
     bool             _karmaEnabled    = false;
