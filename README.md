@@ -215,6 +215,14 @@ engine.begin(cfg); // begins normally; begin() clamps automatically
 
 `validateConfig()` is a free inline function in the `politician` namespace — zero allocations, zero dependencies.
 
+`begin()` rejects a smart-hopping configuration whose minimum dwell cannot be
+represented after the `min + 50 ms` correction. Calling `begin()` on an already
+initialized engine stops the previous runtime first, so rebegin is deterministic.
+Calling `stop()` is safe more than once; it disables capture, unregisters the
+instance, and releases the worker resources. The destructor also stops an active
+engine. WiFi driver ownership remains process-wide and is reused by later
+instances.
+
 ### Configuration
 
 ```cpp
@@ -290,6 +298,26 @@ void setTargetScoreCallback(TargetScoreCb cb); // Custom priority score for auto
 void setPacketLogger(PacketCb cb);           // Raw promiscuous-mode frames
 void setLogger(LogCb cb);                    // Redirect internal log output
 ```
+
+Callbacks run on the engine worker task while the engine state is protected.
+They should do short, non-blocking work and must not call blocking Politician
+methods or retain references to callback records. In particular,
+`EspNowRecord::payload` points into the current receive buffer and is valid only
+for the duration of the callback; copy it when it must outlive the callback.
+
+ESP-NOW capture is enabled by default unless `POLITICIAN_NO_ESPNOW` is defined.
+The parser accepts Espressif vendor-specific action frames and reports the
+source, destination, channel, RSSI, timestamp, and payload through
+`setEspNowCallback()`.
+
+### Regulatory domain
+
+Regulatory-domain selection is intentionally not implemented yet. The current
+channel helper contains common 2.4 GHz and 5 GHz channels but has no authoritative
+country source, DFS/CAC state, or API for selecting a country. A future change
+should add an explicit country/domain configuration backed by the ESP-IDF WiFi
+country API, filter channels from that result, and define behavior for DFS and
+unsupported regions before exposing it publicly.
 
 ### Engine Control
 
