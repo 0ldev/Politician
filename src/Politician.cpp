@@ -11,6 +11,7 @@ namespace politician {
 // ─── Static members ───────────────────────────────────────────────────────────
 Politician *Politician::_instances[POLITICIAN_MAX_INSTANCES] = {};
 bool        Politician::_wifiInitialized = false;
+portMUX_TYPE Politician::_instanceMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Default 2.4GHz hopping sequence (channels 1-13)
 const uint8_t Politician::HOP_SEQ[]  = {1, 6, 11, 2, 7, 3, 8, 4, 9, 5, 10, 12, 13};
@@ -79,6 +80,10 @@ Politician::Politician()
 #endif
 }
 
+Politician::~Politician() {
+    stop();
+}
+
 // ─── Logging ─────────────────────────────────────────────────────────────────
 void Politician::_log(const char *fmt, ...) {
 #ifndef POLITICIAN_NO_LOGGING
@@ -98,10 +103,29 @@ void Politician::_log(const char *fmt, ...) {
 
 // ─── begin() ─────────────────────────────────────────────────────────────────
 Error Politician::begin(const Config &cfg) {
+    if (cfg.smart_hopping && cfg.hop_min_dwell_ms > UINT16_MAX - 50) {
+        return ERR_INVALID_ARG;
+    }
+
+    if (_initialized) stop();
+
     _cfg = cfg;
+    bool wifiDriverStarted = false;
+
+    auto rollback = [&]() {
+        stop();
+        if (wifiDriverStarted) {
+            esp_wifi_set_promiscuous(false);
+            esp_wifi_set_promiscuous_rx_cb(nullptr);
+            esp_wifi_stop();
+            esp_wifi_deinit();
+            _wifiInitialized = false;
+        }
+    };
 
     // ── Register this instance in the shared instance registry ───────────────
     bool registered = false;
+    portENTER_CRITICAL(&_instanceMux);
     for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
         if (_instances[i] == this) { registered = true; break; }  // already registered (re-begin)
     }
@@ -114,16 +138,18 @@ Error Politician::begin(const Config &cfg) {
             }
         }
         if (!registered) {
+            portEXIT_CRITICAL(&_instanceMux);
             _log("[WiFi] ERR: all %d instance slots occupied\n", POLITICIAN_MAX_INSTANCES);
             return ERR_MAX_INSTANCES;
         }
     }
+    portEXIT_CRITICAL(&_instanceMux);
 
     // Validate and clamp critical config values
     if (_cfg.smart_hopping && _cfg.hop_min_dwell_ms >= _cfg.hop_max_dwell_ms) {
         _log("[Config] WARNING: hop_min_dwell_ms (%u) >= hop_max_dwell_ms (%u); clamping max to min+50ms\n",
              _cfg.hop_min_dwell_ms, _cfg.hop_max_dwell_ms);
-        _cfg.hop_max_dwell_ms = _cfg.hop_min_dwell_ms + 50;
+        _cfg.hop_max_dwell_ms = static_cast<uint16_t>(_cfg.hop_min_dwell_ms + 50);
     }
     if (_cfg.fish_timeout_ms < 500) {
         _log("[Config] WARNING: fish_timeout_ms (%u) < 500ms; clamping to 500ms\n", _cfg.fish_timeout_ms);
@@ -140,20 +166,21 @@ Error Politician::begin(const Config &cfg) {
     // ── WiFi driver init — only the first instance does this ─────────────────
     if (!_wifiInitialized) {
         wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
-        if (esp_wifi_init(&wifi_cfg) != ESP_OK) return ERR_WIFI_INIT;
-        if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) return ERR_WIFI_INIT;
+        if (esp_wifi_init(&wifi_cfg) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
+        wifiDriverStarted = true;
+        if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
 
-        if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) return ERR_WIFI_INIT;
-        if (esp_wifi_start() != ESP_OK) return ERR_WIFI_INIT;
+        if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
+        if (esp_wifi_start() != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
 
         esp_log_level_set("wifi", ESP_LOG_NONE);
 
         wifi_promiscuous_filter_t filt = {
             .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
         };
-        if (esp_wifi_set_promiscuous_filter(&filt) != ESP_OK) return ERR_WIFI_INIT;
-        if (esp_wifi_set_promiscuous(true) != ESP_OK) return ERR_WIFI_INIT;
-        if (esp_wifi_set_promiscuous_rx_cb(&_promiscuousCb) != ESP_OK) return ERR_WIFI_INIT;
+        if (esp_wifi_set_promiscuous_filter(&filt) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
+        if (esp_wifi_set_promiscuous(true) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
+        if (esp_wifi_set_promiscuous_rx_cb(&_promiscuousCb) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
 
         _wifiInitialized = true;
     }
@@ -169,30 +196,34 @@ Error Politician::begin(const Config &cfg) {
     ap_cfg.ap.authmode        = WIFI_AUTH_OPEN;
     ap_cfg.ap.channel         = 1;
     ap_cfg.ap.beacon_interval = 1000;
-    esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    if (esp_wifi_set_config(WIFI_IF_AP, &ap_cfg) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
 
     esp_wifi_get_mac(WIFI_IF_STA, _ownStaMac);
-    _log("[WiFi] STA MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
-        _ownStaMac[0], _ownStaMac[1], _ownStaMac[2],
+    _log("[WiFi] STA MAC: XX:XX:XX:%02X:%02X:%02X\n",
         _ownStaMac[3], _ownStaMac[4], _ownStaMac[5]);
 
-    if (esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) return ERR_WIFI_INIT;
+    if (esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
 
     // Initialize Thread Safety
     if (!_lock) {
         _lock = xSemaphoreCreateRecursiveMutex();
-        if (!_lock) return ERR_WIFI_INIT;
+        if (!_lock) { rollback(); return ERR_WIFI_INIT; }
     }
 
     // Initialize Async Processing Core (Ringbuffer + Task)
     if (!_rb) {
         _rb = xRingbufferCreate(16384, RINGBUF_TYPE_NOSPLIT);
-        if (!_rb) return ERR_WIFI_INIT;
+        if (!_rb) { rollback(); return ERR_WIFI_INIT; }
     }
 
     if (!_task) {
-        xTaskCreatePinnedToCore(_workerTask, "pol_worker", 4096, this, 5, &_task, 0);
-        if (!_task) return ERR_WIFI_INIT;
+        _shutdownRequested = false;
+        _workerExited = false;
+        if (xTaskCreatePinnedToCore(_workerTask, "pol_worker", 4096, this, 5, &_task, 0) != pdPASS) {
+            _task = nullptr;
+            rollback();
+            return ERR_WIFI_INIT;
+        }
     }
 
     _initialized = true;
@@ -278,6 +309,17 @@ void Politician::stopHopping() {
 }
 
 void Politician::stop() {
+    portENTER_CRITICAL(&_instanceMux);
+    _shutdownRequested = true;
+    _active = false;
+    for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
+        if (_instances[i] == this) {
+            _instances[i] = nullptr;
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&_instanceMux);
+
     if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
         if (_fishState != FISH_IDLE) {
             esp_wifi_disconnect();
@@ -292,12 +334,27 @@ void Politician::stop() {
         _active           = false;
         xSemaphoreGiveRecursive(_lock);
     }
-    // Deregister from the shared instance registry so the ISR skips this instance.
-    for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
-        if (_instances[i] == this) {
-            _instances[i] = nullptr;
-            break;
-        }
+
+    while (_isrUsers != 0) vTaskDelay(1);
+
+    if (_task && xTaskGetCurrentTaskHandle() == _task) {
+        _log("[WiFi] stop() called by worker; cleanup deferred until the callback returns\n");
+        return;
+    }
+
+    if (_task) {
+        _stopWaiter = xTaskGetCurrentTaskHandle();
+        if (!_workerExited) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        _task = nullptr;
+        _stopWaiter = nullptr;
+    }
+    if (_rb) {
+        vRingbufferDelete(_rb);
+        _rb = nullptr;
+    }
+    if (_lock) {
+        vSemaphoreDelete(_lock);
+        _lock = nullptr;
     }
     _initialized = false;
     _log("[WiFi] Engine stopped\n");
@@ -902,11 +959,21 @@ void IRAM_ATTR Politician::_promiscuousCb(void *buf, wifi_promiscuous_pkt_type_t
     uint16_t total_len = sizeof(wifi_pkt_rx_ctrl_t) + pkt->rx_ctrl.sig_len;
 
     for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
+        portENTER_CRITICAL_ISR(&_instanceMux);
         Politician *inst = _instances[i];
-        if (!inst || !inst->_active || !inst->_rb) continue;
-        if (xRingbufferSendFromISR(inst->_rb, buf, total_len, NULL) != pdTRUE) {
+        if (!inst || inst->_shutdownRequested || !inst->_active || !inst->_rb) {
+            portEXIT_CRITICAL_ISR(&_instanceMux);
+            continue;
+        }
+        inst->_isrUsers++;
+        RingbufHandle_t rb = inst->_rb;
+        portEXIT_CRITICAL_ISR(&_instanceMux);
+        if (xRingbufferSendFromISR(rb, buf, total_len, NULL) != pdTRUE) {
             inst->_stats.dropped++;
         }
+        portENTER_CRITICAL_ISR(&_instanceMux);
+        inst->_isrUsers--;
+        portEXIT_CRITICAL_ISR(&_instanceMux);
     }
 }
 
@@ -914,8 +981,13 @@ void Politician::_workerTask(void *pvParameters) {
     Politician *self = (Politician *)pvParameters;
     while (true) {
         size_t size = 0;
-        wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)xRingbufferReceive(self->_rb, &size, portMAX_DELAY);
+        wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)xRingbufferReceive(self->_rb, &size, pdMS_TO_TICKS(50));
+        if (!pkt && self->_shutdownRequested) break;
         if (pkt) {
+            if (self->_shutdownRequested) {
+                vRingbufferReturnItem(self->_rb, (void *)pkt);
+                break;
+            }
             // Infer frame type from 802.11 Frame Control field
             uint16_t fc = pkt->payload[0] | (pkt->payload[1] << 8);
             wifi_promiscuous_pkt_type_t type = WIFI_PKT_MGMT;
@@ -935,6 +1007,10 @@ void Politician::_workerTask(void *pvParameters) {
             vRingbufferReturnItem(self->_rb, (void *)pkt);
         }
     }
+    self->_workerExited = true;
+    self->_task = nullptr;
+    if (self->_stopWaiter) xTaskNotifyGive(self->_stopWaiter);
+    vTaskDelete(nullptr);
 }
 
 void Politician::_handleFrame(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuous_pkt_type_t type) {
@@ -1057,6 +1133,29 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         }
         return;
     }
+
+#ifndef POLITICIAN_NO_ESPNOW
+    if (subtype == MGMT_SUB_ACTION) {
+        if (_espNowCb && len >= 15 && payload[0] == 0x7F &&
+            payload[1] == 0x18 && payload[2] == 0xFE && payload[3] == 0x34 &&
+            payload[8] == 0xDD && payload[10] == 0x18 && payload[11] == 0xFE &&
+            payload[12] == 0x34 && payload[13] == 0x04 && payload[14] == 0x01) {
+            const uint16_t bodyOffset = 15;
+            const uint16_t advertisedLength = payload[9] >= 5 ? payload[9] - 5 : 0;
+            const uint16_t availableLength = len - bodyOffset;
+            EspNowRecord rec;
+            memcpy(rec.src, hdr->addr2, 6);
+            memcpy(rec.dst, hdr->addr1, 6);
+            rec.channel = _rxChannel;
+            rec.rssi = rssi;
+            rec.ts_usec = static_cast<uint32_t>(esp_timer_get_time());
+            rec.payload = payload + bodyOffset;
+            rec.length = advertisedLength < availableLength ? advertisedLength : availableLength;
+            _espNowCb(rec);
+        }
+        return;
+    }
+#endif
 
     // Parse both Beacons and Probe Responses.
     // Sniffing Probe Responses automatically enables Active Decloaking

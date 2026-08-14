@@ -6,6 +6,7 @@
 #include <freertos/task.h>
 #include <freertos/ringbuf.h>
 #include <freertos/semphr.h>
+#include <freertos/portmacro.h>
 #include "PoliticianTypes.h"
 
 namespace politician {
@@ -72,6 +73,7 @@ typedef struct {
 #define MGMT_SUB_AUTH       0xB0
 #define MGMT_SUB_DISASSOC   0xA0
 #define MGMT_SUB_DEAUTH     0xC0
+#define MGMT_SUB_ACTION     0xD0
 
 // ─── EAPOL ────────────────────────────────────────────────────────────────────
 #define EAPOL_LLC_OFFSET    0
@@ -103,6 +105,7 @@ typedef struct {
 class Politician {
 public:
     Politician();
+    ~Politician();
 
     /**
      * @brief Initializes the WiFi driver in promiscuous mode.
@@ -158,6 +161,8 @@ public:
      * @brief Full engine teardown. Aborts any in-progress attack, clears the
      *        target, stops hopping, and disables frame processing in one call.
      *        Use this instead of combining stopHopping() + clearTarget() + setActive(false).
+    *        If called by the worker or one of its callbacks, shutdown is marked and
+    *        resource cleanup is deferred; call stop() again after the callback returns.
      */
     void    stop();
 
@@ -463,6 +468,11 @@ public:
      */
     void setWpsCallback(WpsCb cb)               { _wpsCb = cb; }
 
+#ifndef POLITICIAN_NO_ESPNOW
+    /** @brief Sets the callback for captured ESP-NOW vendor-specific action frames. */
+    void setEspNowCallback(EspNowCb cb)         { _espNowCb = cb; }
+#endif
+
 #ifndef POLITICIAN_NO_MSCHAPV2
     /**
      * @brief Sets the callback fired on a bare EAP-MSCHAPv2 challenge/response exchange.
@@ -524,12 +534,17 @@ private:
     static void _workerTask(void *pvParameters);
     /** Per-process instance registry; populated by begin(), cleared by stop(). */
     static Politician *_instances[POLITICIAN_MAX_INSTANCES];
+    static portMUX_TYPE _instanceMux;
     /** Set to true after the first successful begin() so subsequent calls skip WiFi driver init. */
     static bool        _wifiInitialized;
 
     RingbufHandle_t _rb = nullptr;
     TaskHandle_t    _task = nullptr;
+    TaskHandle_t    _stopWaiter = nullptr;
     SemaphoreHandle_t _lock = nullptr;
+    volatile bool _shutdownRequested = true;
+    volatile bool _workerExited = true;
+    volatile uint32_t _isrUsers = 0;
 
     void _handleFrame(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuous_pkt_type_t type);
     void _handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload, uint16_t len, int8_t rssi);
@@ -627,6 +642,9 @@ private:
     RogueApCb        _rogueApCb       = nullptr;
     _FpHookCb        _fpHook          = nullptr;
     WpsCb            _wpsCb           = nullptr;
+#ifndef POLITICIAN_NO_ESPNOW
+    EspNowCb         _espNowCb        = nullptr;
+#endif
 #ifndef POLITICIAN_NO_KARMA
     KarmaCb          _karmaCb         = nullptr;
     bool             _karmaEnabled    = false;

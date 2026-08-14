@@ -86,6 +86,25 @@ typedef void (*WpsCb)(const WpsRecord &rec);
 typedef void (*MsChapCb)(const MsChapRecord &rec);
 #endif
 
+#ifndef POLITICIAN_NO_ESPNOW
+/** @brief Captured ESP-NOW vendor-specific action frame. */
+struct EspNowRecord {
+    uint8_t src[6];
+    uint8_t dst[6];
+    uint8_t channel;
+    int8_t rssi;
+    uint32_t ts_usec;
+    const uint8_t *payload;
+    uint16_t length;
+};
+
+#ifndef POLITICIAN_NO_STD_FUNCTION
+using EspNowCb = std::function<void(const EspNowRecord &rec)>;
+#else
+typedef void (*EspNowCb)(const EspNowRecord &rec);
+#endif
+#endif
+
 // ─── Error Codes ──────────────────────────────────────────────────────────────
 enum Error {
     OK = 0,
@@ -167,6 +186,8 @@ inline int validateConfig(const Config &cfg, const char **out, uint8_t maxOut) {
     auto w = [&](const char *msg) { if (n < maxOut) out[n++] = msg; };
     if (cfg.smart_hopping && cfg.hop_min_dwell_ms >= cfg.hop_max_dwell_ms)
         w("hop_min_dwell_ms >= hop_max_dwell_ms — max will be clamped to min+50ms");
+    if (cfg.smart_hopping && cfg.hop_min_dwell_ms > UINT16_MAX - 50)
+        w("hop_min_dwell_ms is too large for the min+50ms clamp");
     if (cfg.fish_timeout_ms < 500)
         w("fish_timeout_ms < 500 — will be clamped to 500ms");
     if (cfg.csa_wait_ms < 1000)
