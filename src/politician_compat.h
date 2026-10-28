@@ -2,6 +2,7 @@
 
 #ifdef ARDUINO
     #include <Arduino.h>
+    #include <esp_timer.h>
 #else
     #include <esp_timer.h>
     #include <freertos/FreeRTOS.h>

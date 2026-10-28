@@ -72,6 +72,7 @@ typedef struct {
 #define MGMT_SUB_AUTH       0xB0
 #define MGMT_SUB_DISASSOC   0xA0
 #define MGMT_SUB_DEAUTH     0xC0
+#define MGMT_SUB_ACTION     0xD0
 
 // ─── EAPOL ────────────────────────────────────────────────────────────────────
 #define EAPOL_LLC_OFFSET    0
@@ -460,8 +461,18 @@ public:
      * The M1 message is the first EAP-WSC frame sent by the Enrollee and is unencrypted,
      * revealing device attributes (name, manufacturer, model, auth/config capabilities).
      * Only fired if the callback is set — has zero overhead otherwise.
+     * @param cb Callback function
      */
     void setWpsCallback(WpsCb cb)               { _wpsCb = cb; }
+
+#ifndef POLITICIAN_NO_ESPNOW
+    /**
+     * @brief Set callback for captured ESP-NOW action frames.
+     * Only fired if the callback is set — has zero overhead otherwise.
+     * @param cb Callback function
+     */
+    void setEspNowCallback(EspNowCb cb)         { _espNowCb = cb; }
+#endif
 
 #ifndef POLITICIAN_NO_MSCHAPV2
     /**
@@ -627,6 +638,9 @@ private:
     RogueApCb        _rogueApCb       = nullptr;
     _FpHookCb        _fpHook          = nullptr;
     WpsCb            _wpsCb           = nullptr;
+#ifndef POLITICIAN_NO_ESPNOW
+    EspNowCb         _espNowCb        = nullptr;
+#endif
 #ifndef POLITICIAN_NO_KARMA
     KarmaCb          _karmaCb         = nullptr;
     bool             _karmaEnabled    = false;
