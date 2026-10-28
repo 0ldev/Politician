@@ -10,6 +10,10 @@ updates:
       prefix: "ci"
       include: "scope"
     open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
     labels:
       - "dependencies"
       - "github-actions"
