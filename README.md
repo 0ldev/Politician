@@ -1127,6 +1127,7 @@ beaconFlood(ssids, ssidCount, 6, 5000);
 | `MsChapCapture` | Bare EAP-MSCHAPv2 credential capture (hashcat -m 5500) |
 | `KarmaResponder` | KARMA rogue AP responder with runtime Serial toggle |
 | `PassiveSensing` | RSSI-based human presence and motion detection |
+| `EspNowCapture` | ESP-NOW action frame capture and payload parsing |
 
 ## Legal & Ethical Use
 

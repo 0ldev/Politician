@@ -376,7 +376,7 @@ struct EspNowRecord {
     uint8_t  channel;         ///< Channel on which the frame was captured
     int8_t   rssi;            ///< Signal strength of the frame (dBm)
     uint32_t ts_usec;         ///< RX timestamp in microseconds
-    const uint8_t* payload;   ///< Pointer to the ESP-NOW payload (internal buffer, do not free)
+    const uint8_t* payload;   ///< Pointer to internal ring-buffer memory; only valid for callback duration. Do not free, retain, or queue past callback return; memcpy if needed.
     uint16_t length;          ///< Length of the ESP-NOW payload
 };
 

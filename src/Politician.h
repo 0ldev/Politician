@@ -457,8 +457,10 @@ public:
     void setClientFoundCallback(ClientFoundCb cb)   { _clientFoundCb = cb; }
 
     /**
-     * @brief Set callback for Wi-Fi Protected Setup (WPS) M1 messages.
-     * Captured from unassociated Probe Requests.
+     * @brief Sets the callback fired when a WPS Enrollee's M1 message is captured.
+     * The M1 message is the first EAP-WSC frame sent by the Enrollee and is unencrypted,
+     * revealing device attributes (name, manufacturer, model, auth/config capabilities).
+     * Only fired if the callback is set — has zero overhead otherwise.
      * @param cb Callback function
      */
     void setWpsCallback(WpsCb cb)               { _wpsCb = cb; }
@@ -466,6 +468,7 @@ public:
 #ifndef POLITICIAN_NO_ESPNOW
     /**
      * @brief Set callback for captured ESP-NOW action frames.
+     * Only fired if the callback is set — has zero overhead otherwise.
      * @param cb Callback function
      */
     void setEspNowCallback(EspNowCb cb)         { _espNowCb = cb; }
