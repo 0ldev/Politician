@@ -1,0 +1,56 @@
+name: "CodeQL Analysis"
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop]
+  schedule:
+    - cron: '30 2 * * 1'
+
+jobs:
+  analyze:
+    name: Analyze (C/C++)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.x'
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('**/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install platformio intelhex
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e1c541575b54ca50e5f5dcc7da77615756cf9f51  # v3.39.1
+        with:
+          languages: c-cpp
+          queries: security-extended
+
+      - name: Build C++ sources with PlatformIO
+        run: |
+          pio run -d examples/DynamicControl
+          pio run -d examples/ExportFormats
+          pio run -d examples/StorageAndNVS
+          pio run -d examples/FuzzingAndInjection
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@e1c541575b54ca50e5f5dcc7da77615756cf9f51  # v3.39.1
+        with:
+          category: "/language:c-cpp"
