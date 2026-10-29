@@ -17,18 +17,20 @@ namespace stress {
      * @brief Blasts a massive SAE (Simultaneous Authentication of Equals) Commit flood.
      *        Forces WPA3 routers to rapidly consume heap memory parsing anti-clogging tokens.
      * 
-     * @param bssid Target router's MAC address
-     * @param count Number of frames to fire natively
+     * @param bssid   Target router's MAC address
+     * @param count   Number of frames to fire natively
+     * @param channel Optional 802.11 channel to tune the radio to before flooding (0 = keep current channel)
      */
-    void saeCommitFlood(const uint8_t* bssid, uint32_t count = 1000);
+    void saeCommitFlood(const uint8_t* bssid, uint32_t count = 1000, uint8_t channel = 0);
 
     /**
      * @brief Blasts out massive strings of randomized Probe Requests to overwhelm
      *        local Access Points with client association processing queues.
      * 
-     * @param count Number of frames to fire natively
+     * @param count   Number of frames to fire natively
+     * @param channel Optional 802.11 channel to tune the radio to before flooding (0 = keep current channel)
      */
-    void probeRequestFlood(uint32_t count = 1000);
+    void probeRequestFlood(uint32_t count = 1000, uint8_t channel = 0);
 
     /**
      * @brief Transmits beacon frames with rotating fake SSIDs to stress-test AP
