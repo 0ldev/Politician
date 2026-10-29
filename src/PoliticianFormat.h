@@ -7,6 +7,17 @@ namespace politician {
 namespace format {
 
 /**
+ * @brief Converts a captured HandshakeRecord into the Hashcat 22000 (hc22000) text format
+ *        inside a caller-supplied buffer with zero heap allocation.
+ *
+ * @param rec     The captured handshake or PMKID record.
+ * @param buffer  Destination character buffer (recommended >= 768 bytes).
+ * @param max_len Capacity of @p buffer in bytes (including null terminator).
+ * @return Number of characters written (excluding null terminator), or 0 if unsupported or buffer too small.
+ */
+size_t toHC22000(const HandshakeRecord& rec, char* buffer, size_t max_len);
+
+/**
  * @brief Converts a captured HandshakeRecord into the Hashcat 22000 (hc22000) text format.
  * 
  * The hc22000 format is an easily copyable string compatible with Hashcat and other modern cracking tools.

@@ -4,71 +4,105 @@
 namespace politician {
 namespace format {
 
-static void appendHex(std::string& str, const uint8_t* data, size_t len) {
-    char buf[3];
+static bool writeHexToBuf(char* buf, size_t max_len, size_t& pos, const uint8_t* data, size_t len) {
+    static const char HEX_LUT[17] = "0123456789abcdef";
+    if (pos + (len * 2) >= max_len) return false;
     for (size_t i = 0; i < len; i++) {
-        sprintf(buf, "%02x", data[i]);
-        str += buf;
+        uint8_t b = data[i];
+        buf[pos++] = HEX_LUT[b >> 4];
+        buf[pos++] = HEX_LUT[b & 0x0F];
     }
+    return true;
+}
+
+static bool writeCharToBuf(char* buf, size_t max_len, size_t& pos, char c) {
+    if (pos + 1 >= max_len) return false;
+    buf[pos++] = c;
+    return true;
+}
+
+static bool writeStrToBuf(char* buf, size_t max_len, size_t& pos, const char* s, size_t slen) {
+    if (pos + slen >= max_len) return false;
+    memcpy(buf + pos, s, slen);
+    pos += slen;
+    return true;
+}
+
+size_t toHC22000(const HandshakeRecord& rec, char* buffer, size_t max_len) {
+#ifndef POLITICIAN_NO_HC22000
+    if (!buffer || max_len == 0) return 0;
+    buffer[0] = '\0';
+    if (rec.type == CAP_EAPOL_HALF) return 0; // No anonce — not crackable
+
+    // Hashcat 22000 Format:
+    // WPA*TYPE*MIC*BSSID*STA*SSID*ANONCE*EAPOL*KEYVER*KEYDATA
+    size_t pos = 0;
+    if (!writeStrToBuf(buffer, max_len, pos, "WPA*", 4)) { buffer[0] = '\0'; return 0; }
+
+    // 1. TYPE
+    if (rec.type == CAP_PMKID) {
+        if (!writeStrToBuf(buffer, max_len, pos, "01*", 3)) { buffer[0] = '\0'; return 0; }
+    } else if (rec.type == CAP_SAE) {
+        if (!writeStrToBuf(buffer, max_len, pos, "06*", 3)) { buffer[0] = '\0'; return 0; }
+    } else {
+        if (!writeStrToBuf(buffer, max_len, pos, "02*", 3)) { buffer[0] = '\0'; return 0; }
+    }
+
+    // 2. MIC (Field 3)
+    if (rec.type != CAP_PMKID && rec.type != CAP_SAE) {
+        if (!writeHexToBuf(buffer, max_len, pos, rec.mic, 16)) { buffer[0] = '\0'; return 0; }
+    }
+    if (!writeCharToBuf(buffer, max_len, pos, '*')) { buffer[0] = '\0'; return 0; }
+
+    // 3. BSSID (Field 4)
+    if (!writeHexToBuf(buffer, max_len, pos, rec.bssid, 6)) { buffer[0] = '\0'; return 0; }
+    if (!writeCharToBuf(buffer, max_len, pos, '*')) { buffer[0] = '\0'; return 0; }
+
+    // 4. STA (Field 5)
+    if (!writeHexToBuf(buffer, max_len, pos, rec.sta, 6)) { buffer[0] = '\0'; return 0; }
+    if (!writeCharToBuf(buffer, max_len, pos, '*')) { buffer[0] = '\0'; return 0; }
+
+    // 5. SSID (Field 6)
+    if (!writeHexToBuf(buffer, max_len, pos, (const uint8_t*)rec.ssid, rec.ssid_len)) { buffer[0] = '\0'; return 0; }
+    if (!writeCharToBuf(buffer, max_len, pos, '*')) { buffer[0] = '\0'; return 0; }
+
+    // 6. ANONCE (Field 7)
+    if (rec.type == CAP_EAPOL || rec.type == CAP_EAPOL_CSA) {
+        if (!writeHexToBuf(buffer, max_len, pos, rec.anonce, 32)) { buffer[0] = '\0'; return 0; }
+    }
+    if (!writeCharToBuf(buffer, max_len, pos, '*')) { buffer[0] = '\0'; return 0; }
+
+    // 7. EAPOL/M2 (Field 8)
+    if (rec.type == CAP_EAPOL || rec.type == CAP_EAPOL_CSA) {
+        if (!writeHexToBuf(buffer, max_len, pos, rec.eapol_m2, rec.eapol_m2_len)) { buffer[0] = '\0'; return 0; }
+    }
+    if (!writeCharToBuf(buffer, max_len, pos, '*')) { buffer[0] = '\0'; return 0; }
+
+    // 8. KEYVER (Field 9)
+    if (!writeStrToBuf(buffer, max_len, pos, "02*", 3)) { buffer[0] = '\0'; return 0; }
+
+    // 9. KEYDATA (Field 10) - Used for PMKID or SAE elements
+    if (rec.type == CAP_PMKID) {
+        if (!writeHexToBuf(buffer, max_len, pos, rec.pmkid, 16)) { buffer[0] = '\0'; return 0; }
+    } else if (rec.type == CAP_SAE) {
+        if (!writeHexToBuf(buffer, max_len, pos, rec.sae_data, rec.sae_len)) { buffer[0] = '\0'; return 0; }
+    }
+
+    buffer[pos] = '\0';
+    return pos;
+#else
+    (void)rec;
+    if (buffer && max_len > 0) buffer[0] = '\0';
+    return 0;
+#endif
 }
 
 std::string toHC22000(const HandshakeRecord& rec) {
 #ifndef POLITICIAN_NO_HC22000
-    if (rec.type == CAP_EAPOL_HALF) return std::string(); // No anonce — not crackable
-    
-    // Hashcat 22000 Format:
-    // WPA*TYPE*MIC*BSSID*STA*SSID*ANONCE*EAPOL*KEYVER*KEYDATA
-    
-    std::string out = "WPA*";
-    
-    // 1. TYPE
-    if (rec.type == CAP_PMKID) out += "01*";
-    else if (rec.type == CAP_SAE) out += "06*";
-    else out += "02*";
-
-    // 2. MIC (Field 3)
-    if (rec.type == CAP_PMKID || rec.type == CAP_SAE) {
-        out += "*"; // Empty for PMKID/SAE
-    } else {
-        appendHex(out, rec.mic, 16);
-        out += "*";
-    }
-
-    // 3. BSSID (Field 4)
-    appendHex(out, rec.bssid, 6);
-    out += "*";
-
-    // 4. STA (Field 5)
-    appendHex(out, rec.sta, 6);
-    out += "*";
-
-    // 5. SSID (Field 6)
-    appendHex(out, (const uint8_t*)rec.ssid, rec.ssid_len);
-    out += "*";
-
-    // 6. ANONCE (Field 7)
-    if (rec.type == CAP_EAPOL || rec.type == CAP_EAPOL_CSA) {
-        appendHex(out, rec.anonce, 32);
-    }
-    out += "*";
-
-    // 7. EAPOL/M2 (Field 8)
-    if (rec.type == CAP_EAPOL || rec.type == CAP_EAPOL_CSA) {
-        appendHex(out, rec.eapol_m2, rec.eapol_m2_len);
-    }
-    out += "*";
-
-    // 8. KEYVER (Field 9)
-    out += "02*"; // Default to WPA2/AES
-
-    // 9. KEYDATA (Field 10) - Used for PMKID or SAE elements
-    if (rec.type == CAP_PMKID) {
-        appendHex(out, rec.pmkid, 16);
-    } else if (rec.type == CAP_SAE) {
-        appendHex(out, rec.sae_data, rec.sae_len);
-    }
-    
-    return out;
+    char buf[768];
+    size_t n = toHC22000(rec, buf, sizeof(buf));
+    if (n == 0) return std::string();
+    return std::string(buf, n);
 #else
     (void)rec;
     return std::string();
