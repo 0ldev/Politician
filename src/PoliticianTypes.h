@@ -167,6 +167,8 @@ inline int validateConfig(const Config &cfg, const char **out, uint8_t maxOut) {
     auto w = [&](const char *msg) { if (n < maxOut) out[n++] = msg; };
     if (cfg.smart_hopping && cfg.hop_min_dwell_ms >= cfg.hop_max_dwell_ms)
         w("hop_min_dwell_ms >= hop_max_dwell_ms — max will be clamped to min+50ms");
+    if (cfg.smart_hopping && cfg.hop_min_dwell_ms > UINT16_MAX - 50)
+        w("hop_min_dwell_ms is too large for the min+50ms clamp");
     if (cfg.fish_timeout_ms < 500)
         w("fish_timeout_ms < 500 — will be clamped to 500ms");
     if (cfg.csa_wait_ms < 1000)
