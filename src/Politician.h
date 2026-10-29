@@ -6,24 +6,116 @@
 #include <freertos/task.h>
 #include <freertos/ringbuf.h>
 #include <freertos/semphr.h>
+#include <freertos/portmacro.h>
 #include "PoliticianTypes.h"
 
 namespace politician {
 
+#ifdef POLITICIAN_MINIMAL_MEMORY
+#ifndef POLITICIAN_MAX_AP_CACHE
+#define POLITICIAN_MAX_AP_CACHE 16
+#endif
+#ifndef POLITICIAN_MAX_SESSIONS
+#define POLITICIAN_MAX_SESSIONS 2
+#endif
+#ifndef POLITICIAN_MAX_CAPTURED
+#define POLITICIAN_MAX_CAPTURED 32
+#endif
+#ifndef POLITICIAN_MAX_CHANNELS
+#define POLITICIAN_MAX_CHANNELS 14
+#endif
+#ifndef POLITICIAN_MAX_INSTANCES
+#define POLITICIAN_MAX_INSTANCES 1
+#endif
+#ifndef POLITICIAN_RB_SIZE
+#define POLITICIAN_RB_SIZE 4096
+#endif
+#ifndef POLITICIAN_MAX_IGNORE
+#define POLITICIAN_MAX_IGNORE 16
+#endif
+#ifndef POLITICIAN_MAX_INJECT_QUEUE
+#define POLITICIAN_MAX_INJECT_QUEUE 2
+#endif
+#ifndef POLITICIAN_MAX_ATTACK_OVERRIDES
+#define POLITICIAN_MAX_ATTACK_OVERRIDES 4
+#endif
+#ifndef POLITICIAN_MAX_SSID_OVERRIDES
+#define POLITICIAN_MAX_SSID_OVERRIDES 4
+#endif
+#ifndef POLITICIAN_MAX_EAP_METHODS
+#define POLITICIAN_MAX_EAP_METHODS 4
+#endif
+#ifndef POLITICIAN_MAX_KARMA_SEEN
+#define POLITICIAN_MAX_KARMA_SEEN 4
+#endif
+#ifndef POLITICIAN_MAX_MSCHAP_SESSIONS
+#define POLITICIAN_MAX_MSCHAP_SESSIONS 2
+#endif
+#endif // POLITICIAN_MINIMAL_MEMORY
+
+/** @brief Maximum number of discovered APs retained in the internal cache. */
 #ifndef POLITICIAN_MAX_AP_CACHE
 #define POLITICIAN_MAX_AP_CACHE 48
 #endif
 
+/** @brief Maximum number of concurrent EAPOL 4-way handshake sessions tracked. */
 #ifndef POLITICIAN_MAX_SESSIONS
 #define POLITICIAN_MAX_SESSIONS 8
 #endif
 
+/** @brief Maximum number of captured BSSIDs remembered per session. */
 #ifndef POLITICIAN_MAX_CAPTURED
 #define POLITICIAN_MAX_CAPTURED 128
 #endif
 
+/** @brief Maximum number of channels in the custom hopping sequence. */
 #ifndef POLITICIAN_MAX_CHANNELS
 #define POLITICIAN_MAX_CHANNELS 50
+#endif
+
+/** @brief Size in bytes of the FreeRTOS promiscuous packet ringbuffer per instance. */
+#ifndef POLITICIAN_RB_SIZE
+#define POLITICIAN_RB_SIZE 16384
+#endif
+
+/** @brief Maximum number of BSSIDs in the ignore list. */
+#ifndef POLITICIAN_MAX_IGNORE
+#define POLITICIAN_MAX_IGNORE 128
+#endif
+
+/** @brief Maximum number of frames queued for deferred channel-synchronized injection. */
+#ifndef POLITICIAN_MAX_INJECT_QUEUE
+#define POLITICIAN_MAX_INJECT_QUEUE 4
+#endif
+
+/** @brief Maximum byte length of a single queued custom injection frame. */
+#ifndef POLITICIAN_MAX_INJECT_LEN
+#define POLITICIAN_MAX_INJECT_LEN 256
+#endif
+
+/** @brief Maximum number of per-BSSID attack mask overrides. */
+#ifndef POLITICIAN_MAX_ATTACK_OVERRIDES
+#define POLITICIAN_MAX_ATTACK_OVERRIDES 8
+#endif
+
+/** @brief Maximum number of per-SSID attack mask overrides. */
+#ifndef POLITICIAN_MAX_SSID_OVERRIDES
+#define POLITICIAN_MAX_SSID_OVERRIDES 8
+#endif
+
+/** @brief Maximum number of BSSIDs tracked for 802.1X EAP method correlation. */
+#ifndef POLITICIAN_MAX_EAP_METHODS
+#define POLITICIAN_MAX_EAP_METHODS 8
+#endif
+
+/** @brief Maximum number of recent (client, SSID) pairs tracked for KARMA deduplication. */
+#ifndef POLITICIAN_MAX_KARMA_SEEN
+#define POLITICIAN_MAX_KARMA_SEEN 16
+#endif
+
+/** @brief Maximum number of concurrent EAP-MSCHAPv2 challenge/response sessions tracked. */
+#ifndef POLITICIAN_MAX_MSCHAP_SESSIONS
+#define POLITICIAN_MAX_MSCHAP_SESSIONS 4
 #endif
 
 /**
@@ -72,6 +164,7 @@ typedef struct {
 #define MGMT_SUB_AUTH       0xB0
 #define MGMT_SUB_DISASSOC   0xA0
 #define MGMT_SUB_DEAUTH     0xC0
+#define MGMT_SUB_ACTION     0xD0
 
 // ─── EAPOL ────────────────────────────────────────────────────────────────────
 #define EAPOL_LLC_OFFSET    0
@@ -105,6 +198,11 @@ public:
     Politician();
 
     /**
+     * @brief Destructor. Ensures the engine is stopped and resources released.
+     */
+    ~Politician();
+
+    /**
      * @brief Initializes the WiFi driver in promiscuous mode.
      * @param cfg Optional configuration struct.
      * @return OK on success, or an error code.
@@ -114,7 +212,16 @@ public:
     /**
      * @brief Sets a custom logging callback to intercept library output.
      */
-    void    setLogger(LogCb cb) { _logCb = cb; }
+    void    setLogger(LogCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _logCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _logCb = cb;
+        }
+    }
 
     /**
      * @brief Manually adds a BSSID to the "already captured" list to skip it.
@@ -158,6 +265,8 @@ public:
      * @brief Full engine teardown. Aborts any in-progress attack, clears the
      *        target, stops hopping, and disables frame processing in one call.
      *        Use this instead of combining stopHopping() + clearTarget() + setActive(false).
+     * @note  If called by the worker or one of its callbacks, shutdown is marked and
+     *        resource cleanup is deferred; call stop() again after the callback returns.
      */
     void    stop();
 
@@ -231,7 +340,16 @@ public:
      * @brief Configures how the engine handles disconnection when both CSA and Deauth are enabled.
      * @param strategy STRATEGY_AUTO_FALLBACK (default) or STRATEGY_SIMULTANEOUS.
      */
-    void    setDisconnectionStrategy(DisconnectStrategy strategy) { _disconnectStrategy = strategy; }
+    void    setDisconnectionStrategy(DisconnectStrategy strategy) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _disconnectStrategy = strategy;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _disconnectStrategy = strategy;
+        }
+    }
 
     /**
      * @brief Focuses the engine on a single BSSID.
@@ -258,7 +376,7 @@ public:
     void    setAutoTarget(bool enable);
 
     /** @brief Resets all frame and capture statistics to zero. */
-    void    resetStats()         { memset(&_stats, 0, sizeof(_stats)); }
+    void    resetStats();
 
     /** @return The current operating channel. */
     uint8_t         getChannel()  const { return _channel; }
@@ -349,7 +467,16 @@ public:
     bool            getClient(const uint8_t *bssid, int idx, uint8_t out_sta[6]) const;
 
     using _FpHookCb        = void (*)(const uint8_t *mac, const char *ssid, uint8_t ssid_len, uint8_t ch, int8_t rssi, const uint8_t *ie, uint16_t ie_len);
-    void _setFingerprintHook(_FpHookCb cb) { _fpHook = cb; }
+    void _setFingerprintHook(_FpHookCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _fpHook = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _fpHook = cb;
+        }
+    }
 
 #ifndef POLITICIAN_NO_STD_FUNCTION
     using EapolCb          = std::function<void(const HandshakeRecord &rec)>;
@@ -393,7 +520,16 @@ public:
     /**
      * @brief Sets the callback for calculating a custom priority score during autoTarget.
      */
-    void setTargetScoreCallback(TargetScoreCb cb) { _targetScoreCb = cb; }
+    void setTargetScoreCallback(TargetScoreCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _targetScoreCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _targetScoreCb = cb;
+        }
+    }
 
     /**
      * @brief Injects a custom 802.11 frame.
@@ -409,59 +545,168 @@ public:
     /**
      * @brief Sets the callback for when a handshake (EAPOL or PMKID) is captured.
      */
-    void setEapolCallback(EapolCb cb)     { _eapolCb = cb; }
+    void setEapolCallback(EapolCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _eapolCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _eapolCb = cb;
+        }
+    }
 
     /**
      * @brief Sets the callback for when a new Access Point is discovered.
      */
-    void setApFoundCallback(ApFoundCb cb)   { _apFoundCb = cb; }
+    void setApFoundCallback(ApFoundCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _apFoundCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _apFoundCb = cb;
+        }
+    }
 
     /**
      * @brief Sets an early filter callback. If it returns false, the AP is ignored completely.
      */
-    void setTargetFilter(TargetFilterCb cb) { _filterCb = cb; }
+    void setTargetFilter(TargetFilterCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _filterCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _filterCb = cb;
+        }
+    }
 
     /**
      * @brief Sets the callback for raw promiscuous mode packets.
      */
-    void setPacketLogger(PacketCb cb)       { _packetCb = cb; }
+    void setPacketLogger(PacketCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _packetCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _packetCb = cb;
+        }
+    }
 
     /**
      * @brief Sets the callback for passive 802.1X Enterprise Identity harvesting.
      */
-    void setIdentityCallback(IdentityCb cb) { _identityCb = cb; }
+    void setIdentityCallback(IdentityCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _identityCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _identityCb = cb;
+        }
+    }
 
     /**
      * @brief Sets the callback fired when an attack attempt exhausts all options without capturing.
      * Useful for logging failed targets or adjusting strategy at runtime.
      */
-    void setAttackResultCallback(AttackResultCb cb) { _attackResultCb = cb; }
+    void setAttackResultCallback(AttackResultCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _attackResultCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _attackResultCb = cb;
+        }
+    }
 
     /**
      * @brief Sets the callback fired on every probe request frame.
      * Exposes the probing client MAC and requested SSID for device history reconstruction.
      */
-    void setProbeRequestCallback(ProbeRequestCb cb) { _probeReqCb = cb; }
+    void setProbeRequestCallback(ProbeRequestCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _probeReqCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _probeReqCb = cb;
+        }
+    }
 
     /**
      * @brief Sets the callback fired on deauthentication and disassociation frames.
      * Exposes source, destination, BSSID, reason code, and direction for attack/roaming detection.
      */
-    void setDisruptCallback(DisruptCb cb)           { _disruptCb = cb; }
+    void setDisruptCallback(DisruptCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _disruptCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _disruptCb = cb;
+        }
+    }
 
     /**
      * @brief Sets the callback fired when a new client (STA) is first seen associated to an AP.
      * Fired at most once per unique BSSID+STA pair (tracked per AP cache entry, up to 4 clients).
      */
-    void setClientFoundCallback(ClientFoundCb cb)   { _clientFoundCb = cb; }
+    void setClientFoundCallback(ClientFoundCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _clientFoundCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _clientFoundCb = cb;
+        }
+    }
 
     /**
      * @brief Sets the callback fired when a WPS Enrollee's M1 message is captured.
      * The M1 message is the first EAP-WSC frame sent by the Enrollee and is unencrypted,
      * revealing device attributes (name, manufacturer, model, auth/config capabilities).
      * Only fired if the callback is set — has zero overhead otherwise.
+     * @param cb Callback function
      */
-    void setWpsCallback(WpsCb cb)               { _wpsCb = cb; }
+    void setWpsCallback(WpsCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _wpsCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _wpsCb = cb;
+        }
+    }
+
+#ifndef POLITICIAN_NO_ESPNOW
+    /**
+     * @brief Set callback for captured ESP-NOW action frames.
+     * Only fired if the callback is set — has zero overhead otherwise.
+     * @param cb Callback function
+     */
+    void setEspNowCallback(EspNowCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _espNowCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _espNowCb = cb;
+        }
+    }
+#endif
 
 #ifndef POLITICIAN_NO_MSCHAPV2
     /**
@@ -470,14 +715,32 @@ public:
      * The captured MsChapRecord contains everything needed for offline cracking with
      * asleap or hashcat mode 5500. Zero overhead if not set.
      */
-    void setMsChapCallback(MsChapCb cb)         { _msChapCb = cb; }
+    void setMsChapCallback(MsChapCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _msChapCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _msChapCb = cb;
+        }
+    }
 #endif
 
     /**
      * @brief Sets the callback fired when a potential evil twin or rogue AP is detected.
      * Triggered when a newly observed BSSID advertises the same SSID as an already-cached AP on the same channel.
      */
-    void setRogueApCallback(RogueApCb cb)           { _rogueApCb = cb; }
+    void setRogueApCallback(RogueApCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _rogueApCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _rogueApCb = cb;
+        }
+    }
 
 #ifndef POLITICIAN_NO_KARMA
     /**
@@ -492,14 +755,32 @@ public:
      *       when called after `begin()` to toggle dynamically.
      * @param en  true to enable, false to disable
      */
-    void enableKarma(bool en) { _karmaEnabled = en; }
+    void enableKarma(bool en) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _karmaEnabled = en;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _karmaEnabled = en;
+        }
+    }
 
     /**
      * @brief Sets the callback fired each time the KARMA responder echoes a probe.
      * The record contains the client MAC, requested SSID, channel, and spoofed AP MAC.
      * Zero overhead if not set.
      */
-    void setKarmaCallback(KarmaCb cb) { _karmaCb = cb; }
+    void setKarmaCallback(KarmaCb cb) {
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _karmaCb = cb;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _karmaCb = cb;
+        }
+    }
 #endif
 
     /**
@@ -515,8 +796,16 @@ public:
      * @param count     Number of entries in the array
      */
     void setProbeWordlist(const char * const *wordlist, uint8_t count) {
-        _probeWordlist    = wordlist;
-        _probeWordlistLen = count;
+        if (_lock) {
+            if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+                _probeWordlist    = wordlist;
+                _probeWordlistLen = (wordlist != nullptr) ? count : 0;
+                xSemaphoreGiveRecursive(_lock);
+            }
+        } else {
+            _probeWordlist    = wordlist;
+            _probeWordlistLen = (wordlist != nullptr) ? count : 0;
+        }
     }
 
 private:
@@ -524,13 +813,22 @@ private:
     static void _workerTask(void *pvParameters);
     /** Per-process instance registry; populated by begin(), cleared by stop(). */
     static Politician *_instances[POLITICIAN_MAX_INSTANCES];
+    static portMUX_TYPE _instanceMux;
     /** Set to true after the first successful begin() so subsequent calls skip WiFi driver init. */
     static bool        _wifiInitialized;
+    /** Instance currently holding an explicit RF channel lock (or nullptr). */
+    static Politician *_channelLockOwner;
 
     RingbufHandle_t _rb = nullptr;
     TaskHandle_t    _task = nullptr;
+    TaskHandle_t    _stopWaiter = nullptr;
     SemaphoreHandle_t _lock = nullptr;
+    volatile bool   _shutdownRequested = true;
+    volatile bool   _workerExited = true;
+    volatile uint32_t _isrUsers = 0;
 
+    bool _txRaw(wifi_interface_t iface, const void *buf, uint16_t len);
+    void _populateApRecord(int idx, ApRecord &out) const;
     void _handleFrame(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuous_pkt_type_t type);
     void _handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload, uint16_t len, int8_t rssi);
     void _handleData(const ieee80211_hdr_t *hdr, const uint8_t *payload, uint16_t len, int8_t rssi);
@@ -554,7 +852,7 @@ private:
     void _sendKarmaResponse(const uint8_t *client, const char *ssid, uint8_t ssid_len, uint8_t channel, int8_t rssi);
 #endif
 
-    bool       _initialized = false;
+    volatile bool _initialized = false;
     volatile bool _active;
     uint8_t    _channel;
     uint8_t    _rxChannel;
@@ -568,25 +866,27 @@ private:
     DisconnectStrategy _disconnectStrategy;
     uint32_t   _csaFallbackMs;
 
-    static const int MAX_INJECT_QUEUE = 4;
+    static const int MAX_INJECT_QUEUE = POLITICIAN_MAX_INJECT_QUEUE;
     struct InjectFrame {
-        bool     active;
-        uint8_t  payload[256];
+        uint32_t lock_ms;
         uint16_t len;
         uint8_t  channel;
-        uint32_t lock_ms;
+        bool     active;
+        uint8_t  payload[POLITICIAN_MAX_INJECT_LEN];
     };
     InjectFrame _injectQueue[MAX_INJECT_QUEUE];
+    uint8_t     _injectHead  = 0;
+    uint8_t     _injectCount = 0;
 
-    static const int MAX_ATTACK_OVERRIDES = 8;
+    static const int MAX_ATTACK_OVERRIDES = POLITICIAN_MAX_ATTACK_OVERRIDES;
     struct AttackOverride { bool active; uint8_t bssid[6]; uint8_t mask; };
     AttackOverride _attackOverrides[MAX_ATTACK_OVERRIDES];
     struct SsidOverride { bool active; char ssid[33]; uint8_t ssid_len; uint8_t mask; bool substring; };
-    static const int MAX_SSID_OVERRIDES = 8;
+    static const int MAX_SSID_OVERRIDES = POLITICIAN_MAX_SSID_OVERRIDES;
     SsidOverride _ssidOverrides[MAX_SSID_OVERRIDES];
     uint8_t      _ssidOverrideIdx = 0; ///< Circular eviction pointer for the SSID override table.
     struct EapMethodSeen { uint8_t bssid[6]; uint8_t method; };
-    static const uint8_t MAX_EAP_METHODS = 8;
+    static const uint8_t MAX_EAP_METHODS = POLITICIAN_MAX_EAP_METHODS;
     EapMethodSeen _eapMethods[MAX_EAP_METHODS];
     uint8_t       _eapMethodIdx = 0;
     uint8_t _getAttackMask(const uint8_t *bssid) const;
@@ -627,19 +927,22 @@ private:
     RogueApCb        _rogueApCb       = nullptr;
     _FpHookCb        _fpHook          = nullptr;
     WpsCb            _wpsCb           = nullptr;
+#ifndef POLITICIAN_NO_ESPNOW
+    EspNowCb         _espNowCb        = nullptr;
+#endif
 #ifndef POLITICIAN_NO_KARMA
     KarmaCb          _karmaCb         = nullptr;
     bool             _karmaEnabled    = false;
     // Circular SSID dedup table — avoid spamming one client with repeated responses
-    static const int MAX_KARMA_SEEN   = 16;
-    struct KarmaSeen { uint8_t client[6]; char ssid[33]; uint32_t last_ms; };
+    static const int MAX_KARMA_SEEN   = POLITICIAN_MAX_KARMA_SEEN;
+    struct KarmaSeen { uint32_t last_ms; uint8_t client[6]; char ssid[33]; };
     KarmaSeen        _karmaSeen[MAX_KARMA_SEEN];
     uint8_t          _karmaSeenIdx    = 0;
 #endif
 #ifndef POLITICIAN_NO_MSCHAPV2
     MsChapCb         _msChapCb        = nullptr;
     // Challenge session table: correlates server challenge (from AP) with response (from client)
-    static const int MAX_MSCHAP_SESSIONS = 4;
+    static const int MAX_MSCHAP_SESSIONS = POLITICIAN_MAX_MSCHAP_SESSIONS;
     struct MsChapSession {
         bool    active;
         uint8_t bssid[6];
@@ -652,37 +955,27 @@ private:
     const char * const * _probeWordlist    = nullptr;
     uint8_t              _probeWordlistLen  = 0;
 
+#ifdef POLITICIAN_NO_LOGGING
+    inline void _log(const char *, ...) {}
+#else
     void _log(const char *fmt, ...);
+#endif
 
-    static const int MAX_IGNORE = 128;
+    static const int MAX_IGNORE = POLITICIAN_MAX_IGNORE;
     uint8_t _ignoreList[MAX_IGNORE][6];
     uint8_t _ignoreCount;
 
     static const int MAX_AP_CACHE = POLITICIAN_MAX_AP_CACHE;
     struct ApCacheEntry {
-        uint8_t  bssid[6];
-        char     ssid[33];
-        uint8_t  ssid_len;
-        uint8_t  enc;
-        uint8_t  channel;
-        int8_t   rssi;
         uint32_t first_seen_ms;
         uint32_t last_seen_ms;
         uint32_t last_probe_ms;
         uint32_t last_stimulate_ms;
         uint32_t last_hidden_probe_ms;  // Timestamp of last directed probe for hidden SSID
-        uint8_t  known_stas[4][6];      // Up to 4 persistently tracked client MACs
-        uint8_t  known_sta_count;
+        uint32_t last_attack_ms;        // millis() when the most recent attack was initiated
         uint16_t beacon_count;          // Times this AP has been observed
-        uint8_t  total_attempts;        // Total failed attack attempts against this AP
-        char     country[3];            // IE 7 country code (e.g. "US"), empty if absent
         uint16_t beacon_interval;       // Beacon interval in TUs from fixed fields
-        uint8_t  max_rate_mbps;         // Highest rate from Supported Rates IE (Mbps)
         uint16_t sta_count;             // Connected client count from BSS Load
-        uint8_t  chan_util;             // Channel utilization (0-255)
-        uint8_t  venue_group;           // 802.11u Venue Group
-        uint8_t  venue_type;            // 802.11u Venue Type
-        uint8_t  network_type;          // 802.11u Access Network Type
         struct {
             uint16_t active             : 1;
             uint16_t has_active_clients : 1;
@@ -695,9 +988,23 @@ private:
             uint16_t is_vht             : 1;  // 802.11ac capable
             uint16_t is_he              : 1;  // 802.11ax capable
         } flags;
+        uint8_t  bssid[6];
+        char     ssid[33];
+        uint8_t  known_stas[4][6];      // Up to 4 persistently tracked client MACs
+        char     country[3];            // IE 7 country code (e.g. "US"), empty if absent
+        uint8_t  ssid_len;
+        uint8_t  enc;
+        uint8_t  channel;
+        int8_t   rssi;
+        uint8_t  known_sta_count;
+        uint8_t  total_attempts;        // Total failed attack attempts against this AP
+        uint8_t  max_rate_mbps;         // Highest rate from Supported Rates IE (Mbps)
+        uint8_t  chan_util;             // Channel utilization (0-255)
+        uint8_t  venue_group;           // 802.11u Venue Group
+        uint8_t  venue_type;            // 802.11u Venue Type
+        uint8_t  network_type;          // 802.11u Access Network Type
         uint8_t  chan_width;            // Max channel width: 0=20 1=40 2=80 3=160 4=80+80 (MHz)
         uint8_t  probe_word_idx;        // Next wordlist index to probe for this hidden AP
-        uint32_t last_attack_ms;        // millis() when the most recent attack was initiated
         uint8_t  capture_count;         // Number of successful captures for this BSSID
         uint8_t  pairwise_cipher;       // CIPHER_TKIP/CIPHER_CCMP/CIPHER_UNKNOWN from RSN IE
     };

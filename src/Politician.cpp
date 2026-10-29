@@ -11,6 +11,8 @@ namespace politician {
 // ─── Static members ───────────────────────────────────────────────────────────
 Politician *Politician::_instances[POLITICIAN_MAX_INSTANCES] = {};
 bool        Politician::_wifiInitialized = false;
+Politician *Politician::_channelLockOwner = nullptr;
+portMUX_TYPE Politician::_instanceMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Default 2.4GHz hopping sequence (channels 1-13)
 const uint8_t Politician::HOP_SEQ[]  = {1, 6, 11, 2, 7, 3, 8, 4, 9, 5, 10, 12, 13};
@@ -68,6 +70,8 @@ Politician::Politician()
     memset(_ignoreList, 0, sizeof(_ignoreList));
     memset(_ssidOverrides, 0, sizeof(_ssidOverrides));
     _ssidOverrideIdx = 0;
+    _injectHead  = 0;
+    _injectCount = 0;
     memset(_eapMethods, 0, sizeof(_eapMethods));
 #ifndef POLITICIAN_NO_MSCHAPV2
     memset(_msChapSessions, 0, sizeof(_msChapSessions));
@@ -79,29 +83,82 @@ Politician::Politician()
 #endif
 }
 
+Politician::~Politician() {
+    stop();
+}
+
 // ─── Logging ─────────────────────────────────────────────────────────────────
-void Politician::_log(const char *fmt, ...) {
 #ifndef POLITICIAN_NO_LOGGING
+void Politician::_log(const char *fmt, ...) {
     char buf[256];
     va_list args;
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
-    if (_logCb) {
-        _logCb(buf);
+    LogCb cb = _logCb;
+    if (cb) {
+        cb(buf);
     } else {
         printf("%s", buf);
     }
+}
 #endif
+
+bool Politician::_txRaw(wifi_interface_t iface, const void *buf, uint16_t len) {
+    if (!buf || len == 0) return false;
+    esp_err_t err = esp_wifi_80211_tx(iface, (void *)buf, len, false);
+    if (err == ESP_ERR_NO_MEM) {
+        vTaskDelay(1);
+        err = esp_wifi_80211_tx(iface, (void *)buf, len, false);
+    }
+    if (err == ESP_OK) {
+        _stats.tx_packets++;
+        return true;
+    }
+    _stats.tx_dropped++;
+    return false;
 }
 
 // ─── begin() ─────────────────────────────────────────────────────────────────
 Error Politician::begin(const Config &cfg) {
+    if (cfg.smart_hopping && cfg.hop_min_dwell_ms > UINT16_MAX - 50) {
+        return ERR_INVALID_ARG;
+    }
+
+    if (_initialized) stop();
+
     _cfg = cfg;
+    bool wifiDriverStarted = false;
+
+    auto rollback = [&]() {
+        stop();
+        if (wifiDriverStarted) {
+            bool otherActive = false;
+            portENTER_CRITICAL(&_instanceMux);
+            for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
+                if (_instances[i] != nullptr && _instances[i] != this) {
+                    otherActive = true;
+                    break;
+                }
+            }
+            if (!otherActive) {
+                _wifiInitialized = false;
+            }
+            portEXIT_CRITICAL(&_instanceMux);
+
+            if (!otherActive) {
+                esp_wifi_set_promiscuous(false);
+                esp_wifi_set_promiscuous_rx_cb(nullptr);
+                esp_wifi_stop();
+                esp_wifi_deinit();
+            }
+        }
+    };
 
     // ── Register this instance in the shared instance registry ───────────────
     bool registered = false;
+    portENTER_CRITICAL(&_instanceMux);
     for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
         if (_instances[i] == this) { registered = true; break; }  // already registered (re-begin)
     }
@@ -114,16 +171,18 @@ Error Politician::begin(const Config &cfg) {
             }
         }
         if (!registered) {
+            portEXIT_CRITICAL(&_instanceMux);
             _log("[WiFi] ERR: all %d instance slots occupied\n", POLITICIAN_MAX_INSTANCES);
             return ERR_MAX_INSTANCES;
         }
     }
+    portEXIT_CRITICAL(&_instanceMux);
 
     // Validate and clamp critical config values
     if (_cfg.smart_hopping && _cfg.hop_min_dwell_ms >= _cfg.hop_max_dwell_ms) {
         _log("[Config] WARNING: hop_min_dwell_ms (%u) >= hop_max_dwell_ms (%u); clamping max to min+50ms\n",
              _cfg.hop_min_dwell_ms, _cfg.hop_max_dwell_ms);
-        _cfg.hop_max_dwell_ms = _cfg.hop_min_dwell_ms + 50;
+        _cfg.hop_max_dwell_ms = static_cast<uint16_t>(_cfg.hop_min_dwell_ms + 50);
     }
     if (_cfg.fish_timeout_ms < 500) {
         _log("[Config] WARNING: fish_timeout_ms (%u) < 500ms; clamping to 500ms\n", _cfg.fish_timeout_ms);
@@ -138,24 +197,30 @@ Error Politician::begin(const Config &cfg) {
 #endif
 
     // ── WiFi driver init — only the first instance does this ─────────────────
-    if (!_wifiInitialized) {
-        wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
-        if (esp_wifi_init(&wifi_cfg) != ESP_OK) return ERR_WIFI_INIT;
-        if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) return ERR_WIFI_INIT;
+    portENTER_CRITICAL(&_instanceMux);
+    bool needWifiInit = !_wifiInitialized;
+    if (needWifiInit) {
+        _wifiInitialized = true;
+    }
+    portEXIT_CRITICAL(&_instanceMux);
 
-        if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) return ERR_WIFI_INIT;
-        if (esp_wifi_start() != ESP_OK) return ERR_WIFI_INIT;
+    if (needWifiInit) {
+        wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
+        if (esp_wifi_init(&wifi_cfg) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
+        wifiDriverStarted = true;
+        if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
+
+        if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
+        if (esp_wifi_start() != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
 
         esp_log_level_set("wifi", ESP_LOG_NONE);
 
         wifi_promiscuous_filter_t filt = {
             .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
         };
-        if (esp_wifi_set_promiscuous_filter(&filt) != ESP_OK) return ERR_WIFI_INIT;
-        if (esp_wifi_set_promiscuous(true) != ESP_OK) return ERR_WIFI_INIT;
-        if (esp_wifi_set_promiscuous_rx_cb(&_promiscuousCb) != ESP_OK) return ERR_WIFI_INIT;
-
-        _wifiInitialized = true;
+        if (esp_wifi_set_promiscuous_filter(&filt) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
+        if (esp_wifi_set_promiscuous(true) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
+        if (esp_wifi_set_promiscuous_rx_cb(&_promiscuousCb) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
     }
 
     wifi_config_t ap_cfg = {};
@@ -169,30 +234,34 @@ Error Politician::begin(const Config &cfg) {
     ap_cfg.ap.authmode        = WIFI_AUTH_OPEN;
     ap_cfg.ap.channel         = 1;
     ap_cfg.ap.beacon_interval = 1000;
-    esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    if (esp_wifi_set_config(WIFI_IF_AP, &ap_cfg) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
 
     esp_wifi_get_mac(WIFI_IF_STA, _ownStaMac);
     _log("[WiFi] STA MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
         _ownStaMac[0], _ownStaMac[1], _ownStaMac[2],
         _ownStaMac[3], _ownStaMac[4], _ownStaMac[5]);
 
-    if (esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) return ERR_WIFI_INIT;
+    if (esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) { rollback(); return ERR_WIFI_INIT; }
 
     // Initialize Thread Safety
     if (!_lock) {
         _lock = xSemaphoreCreateRecursiveMutex();
-        if (!_lock) return ERR_WIFI_INIT;
+        if (!_lock) { rollback(); return ERR_WIFI_INIT; }
     }
 
     // Initialize Async Processing Core (Ringbuffer + Task)
     if (!_rb) {
-        _rb = xRingbufferCreate(16384, RINGBUF_TYPE_NOSPLIT);
-        if (!_rb) return ERR_WIFI_INIT;
+        _rb = xRingbufferCreate(POLITICIAN_RB_SIZE, RINGBUF_TYPE_NOSPLIT);
+        if (!_rb) { rollback(); return ERR_WIFI_INIT; }
     }
+
+    _shutdownRequested = false;
+    _workerExited = false;
+    _isrUsers = 0;
 
     if (!_task) {
         xTaskCreatePinnedToCore(_workerTask, "pol_worker", 4096, this, 5, &_task, 0);
-        if (!_task) return ERR_WIFI_INIT;
+        if (!_task) { rollback(); return ERR_WIFI_INIT; }
     }
 
     _initialized = true;
@@ -214,20 +283,58 @@ void Politician::setActive(bool active) {
 Error Politician::setChannel(uint8_t ch) {
     if (!_initialized) return ERR_NOT_ACTIVE;
     if (!isValidChannel(ch)) return ERR_INVALID_CH;
-    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
-        _channel = ch;
-        esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE);
-        xSemaphoreGiveRecursive(_lock);
+    if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ERR_LOCK_TIMEOUT;
     }
+    portENTER_CRITICAL(&_instanceMux);
+    if (_channelLockOwner != nullptr && _channelLockOwner != this) {
+        portEXIT_CRITICAL(&_instanceMux);
+        xSemaphoreGiveRecursive(_lock);
+        return ERR_BUSY;
+    }
+    portEXIT_CRITICAL(&_instanceMux);
+    _channel   = ch;
+    _rxChannel = ch;
+    esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE);
+    xSemaphoreGiveRecursive(_lock);
     return OK;
 }
 
 Error Politician::lockChannel(uint8_t ch) {
-    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
-        _hopping = false;
-        xSemaphoreGiveRecursive(_lock);
+    if (!_initialized) return ERR_NOT_ACTIVE;
+    if (!isValidChannel(ch)) return ERR_INVALID_CH;
+    if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ERR_LOCK_TIMEOUT;
     }
-    return setChannel(ch);
+    portENTER_CRITICAL(&_instanceMux);
+    if (_channelLockOwner != nullptr && _channelLockOwner != this) {
+        portEXIT_CRITICAL(&_instanceMux);
+        xSemaphoreGiveRecursive(_lock);
+        return ERR_BUSY;
+    }
+    _channelLockOwner = this;
+    portEXIT_CRITICAL(&_instanceMux);
+    _hopping   = false;
+    _channel   = ch;
+    _rxChannel = ch;
+    esp_wifi_set_channel(_channel, WIFI_SECOND_CHAN_NONE);
+    xSemaphoreGiveRecursive(_lock);
+    return OK;
+}
+
+void Politician::resetStats() {
+    if (_lock) {
+        if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+            portENTER_CRITICAL(&_instanceMux);
+            memset(&_stats, 0, sizeof(_stats));
+            portEXIT_CRITICAL(&_instanceMux);
+            xSemaphoreGiveRecursive(_lock);
+        }
+    } else {
+        portENTER_CRITICAL(&_instanceMux);
+        memset(&_stats, 0, sizeof(_stats));
+        portEXIT_CRITICAL(&_instanceMux);
+    }
 }
 
 void Politician::setIgnoreList(const uint8_t (*bssids)[6], uint8_t count) {
@@ -259,6 +366,11 @@ void Politician::markCaptured(const uint8_t *bssid) {
 void Politician::startHopping(uint16_t dwellMs) {
     if (!_initialized) return;
     if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        portENTER_CRITICAL(&_instanceMux);
+        if (_channelLockOwner == this) {
+            _channelLockOwner = nullptr;
+        }
+        portEXIT_CRITICAL(&_instanceMux);
         _hopping    = true;
         _active     = true;
         _hopIndex   = 0;
@@ -278,6 +390,23 @@ void Politician::stopHopping() {
 }
 
 void Politician::stop() {
+    portENTER_CRITICAL(&_instanceMux);
+    _initialized       = false;
+    _active            = false;
+    _shutdownRequested = true;
+    if (_channelLockOwner == this) {
+        _channelLockOwner = nullptr;
+    }
+    bool otherActive = false;
+    for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
+        if (_instances[i] == this) {
+            _instances[i] = nullptr;
+        } else if (_instances[i] != nullptr) {
+            otherActive = true;
+        }
+    }
+    portEXIT_CRITICAL(&_instanceMux);
+
     if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
         if (_fishState != FISH_IDLE) {
             esp_wifi_disconnect();
@@ -289,17 +418,52 @@ void Politician::stop() {
         _autoTargetActive = false;
         _m1Locked         = false;
         _probeLocked      = false;
-        _active           = false;
         xSemaphoreGiveRecursive(_lock);
     }
-    // Deregister from the shared instance registry so the ISR skips this instance.
-    for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
-        if (_instances[i] == this) {
-            _instances[i] = nullptr;
-            break;
-        }
+
+    while (_isrUsers != 0) {
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
-    _initialized = false;
+
+    if (!otherActive) {
+        esp_wifi_set_promiscuous(false);
+        esp_wifi_set_promiscuous_rx_cb(nullptr);
+    }
+
+    if (_task && xTaskGetCurrentTaskHandle() == _task) {
+        _log("[WiFi] stop() called by worker; cleanup deferred until callback returns\n");
+        return;
+    }
+
+    if (_task) {
+        ulTaskNotifyTake(pdTRUE, 0);
+
+        portENTER_CRITICAL(&_instanceMux);
+        bool needsWait = !_workerExited && _stopWaiter == nullptr;
+        if (needsWait) {
+            _stopWaiter = xTaskGetCurrentTaskHandle();
+        }
+        portEXIT_CRITICAL(&_instanceMux);
+
+        if (needsWait) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        }
+        _task = nullptr;
+        _stopWaiter = nullptr;
+    }
+
+    SemaphoreHandle_t lockToDelete = _lock;
+    _lock = nullptr;
+    RingbufHandle_t rbToDelete = _rb;
+    _rb = nullptr;
+
+    if (rbToDelete) {
+        vRingbufferDelete(rbToDelete);
+    }
+    if (lockToDelete) {
+        vSemaphoreDelete(lockToDelete);
+    }
+
     _log("[WiFi] Engine stopped\n");
 }
 
@@ -314,25 +478,25 @@ void Politician::setAttackMask(uint8_t mask) {
 }
 
 void Politician::setAttackMaskForBssid(const uint8_t *bssid, uint8_t mask) {
-    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
-        for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
-            if (_attackOverrides[i].active && memcmp(_attackOverrides[i].bssid, bssid, 6) == 0) {
-                _attackOverrides[i].mask = mask; 
-                xSemaphoreGiveRecursive(_lock);
-                return;
-            }
+    if (!bssid) return;
+    if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
+        if (_attackOverrides[i].active && memcmp(_attackOverrides[i].bssid, bssid, 6) == 0) {
+            _attackOverrides[i].mask = mask;
+            xSemaphoreGiveRecursive(_lock);
+            return;
         }
-        for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
-            if (!_attackOverrides[i].active) {
-                _attackOverrides[i].active = true;
-                memcpy(_attackOverrides[i].bssid, bssid, 6);
-                _attackOverrides[i].mask = mask; 
-                xSemaphoreGiveRecursive(_lock);
-                return;
-            }
-        }
-        xSemaphoreGiveRecursive(_lock);
     }
+    for (int i = 0; i < MAX_ATTACK_OVERRIDES; i++) {
+        if (!_attackOverrides[i].active) {
+            _attackOverrides[i].active = true;
+            memcpy(_attackOverrides[i].bssid, bssid, 6);
+            _attackOverrides[i].mask = mask;
+            xSemaphoreGiveRecursive(_lock);
+            return;
+        }
+    }
+    xSemaphoreGiveRecursive(_lock);
     _log("[Attack] Override table full — ignoring per-BSSID mask request\n");
 }
 
@@ -411,12 +575,20 @@ uint8_t Politician::_getAttackMask(const uint8_t *bssid) const {
 // ─── Target mode ──────────────────────────────────────────────────────────────
 Error Politician::setTarget(const uint8_t *bssid, uint8_t channel) {
     if (!_initialized) return ERR_NOT_ACTIVE;
-    if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(200)) != pdTRUE) return ERR_WIFI_INIT;
+    if (!bssid) return ERR_INVALID_ARG;
+    if (!isValidChannel(channel)) return ERR_INVALID_CH;
+    if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(200)) != pdTRUE) return ERR_LOCK_TIMEOUT;
 
     if (_isCaptured(bssid)) {
         xSemaphoreGiveRecursive(_lock);
         return ERR_ALREADY_CAPTURED;
     }
+
+    portENTER_CRITICAL(&_instanceMux);
+    if (_channelLockOwner == nullptr) {
+        _channelLockOwner = this;
+    }
+    portEXIT_CRITICAL(&_instanceMux);
 
     memcpy(_targetBssid, bssid, 6);
     _targetChannel = channel;
@@ -445,6 +617,11 @@ void Politician::clearTarget() {
     if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
         _hasTarget = false;
         memset(_targetBssid, 0, 6);
+        portENTER_CRITICAL(&_instanceMux);
+        if (_channelLockOwner == this) {
+            _channelLockOwner = nullptr;
+        }
+        portEXIT_CRITICAL(&_instanceMux);
         xSemaphoreGiveRecursive(_lock);
     }
     _log("[WiFi] Target cleared — wardriving mode\n");
@@ -452,17 +629,22 @@ void Politician::clearTarget() {
 
 Error Politician::injectCustomFrame(const uint8_t *payload, size_t len, uint8_t channel, uint32_t lock_ms, bool wait_for_channel) {
     if (!_initialized) return ERR_NOT_ACTIVE;
-    if (len > 256) return ERR_INVALID_ARG; // Invalid length for queue
+    if (!payload || len == 0 || len > POLITICIAN_MAX_INJECT_LEN) return ERR_INVALID_ARG;
+    if (!isValidChannel(channel)) return ERR_INVALID_CH;
     
-    if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(200)) != pdTRUE) return ERR_WIFI_INIT;
+    if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(200)) != pdTRUE) return ERR_LOCK_TIMEOUT;
     
     if (!wait_for_channel) {
-        // Synchronous injection
+        // Synchronous injection: avoid clobbering an active off-channel handshake
+        if (_fishState != FISH_IDLE && _fishChannel != channel) {
+            xSemaphoreGiveRecursive(_lock);
+            return ERR_BUSY;
+        }
         esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
         _channel = channel;
         _rxChannel = channel;
         _lastHopMs = millis();
-        esp_wifi_80211_tx(WIFI_IF_STA, (void*)payload, len, false);
+        _txRaw(WIFI_IF_STA, payload, (uint16_t)len);
         _log("[Inject] Transmitted %d bytes on ch%d\n", (int)len, channel);
         if (lock_ms > 0) {
             // Temporarily lock the hopper for this duration
@@ -470,24 +652,19 @@ Error Politician::injectCustomFrame(const uint8_t *payload, size_t len, uint8_t 
             _m1LockEndMs = millis() + lock_ms;
         }
     } else {
-        // Asynchronous injection (queue)
-        bool queued = false;
-        for (int i = 0; i < MAX_INJECT_QUEUE; i++) {
-            if (!_injectQueue[i].active) {
-                _injectQueue[i].active = true;
-                _injectQueue[i].channel = channel;
-                _injectQueue[i].len = len;
-                _injectQueue[i].lock_ms = lock_ms;
-                memcpy(_injectQueue[i].payload, payload, len);
-                queued = true;
-                _log("[Inject] Queued %d bytes for ch%d\n", (int)len, channel);
-                break;
-            }
-        }
-        if (!queued) {
+        // Asynchronous injection (FIFO queue)
+        if (_injectCount >= MAX_INJECT_QUEUE) {
             xSemaphoreGiveRecursive(_lock);
-            return ERR_QUEUE_FULL; // Queue full
+            return ERR_QUEUE_FULL;
         }
+        uint8_t slot = (_injectHead + _injectCount) % MAX_INJECT_QUEUE;
+        _injectQueue[slot].active  = true;
+        _injectQueue[slot].channel = channel;
+        _injectQueue[slot].len     = (uint16_t)len;
+        _injectQueue[slot].lock_ms = lock_ms;
+        memcpy(_injectQueue[slot].payload, payload, len);
+        _injectCount++;
+        _log("[Inject] Queued %d bytes for ch%d\n", (int)len, channel);
     }
     
     xSemaphoreGiveRecursive(_lock);
@@ -520,12 +697,16 @@ uint8_t Politician::getChannelsSortedByActivity(uint8_t *out, uint8_t count) con
     uint8_t chs[200];
     uint32_t cnts[200];
     uint8_t n = 0;
+    bool locked = (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(50)) == pdTRUE);
     for (uint16_t i = 1; i < 200; i++) {
         if (_stats.channel_frames[i] > 0) {
             chs[n] = (uint8_t)i;
             cnts[n] = _stats.channel_frames[i];
             n++;
         }
+    }
+    if (locked) {
+        xSemaphoreGiveRecursive(_lock);
     }
     for (uint8_t i = 1; i < n; i++) {
         uint8_t kc = chs[i];
@@ -553,31 +734,33 @@ uint8_t Politician::setAutoChannelList(uint8_t topN) {
 }
 
 void Politician::setChannelBands(bool ghz24, bool ghz5) {
-    if (_lock && xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
-        _customChannelCount = 0;
-        if (ghz24) {
-            for (uint8_t i = 0; i < HOP_COUNT && _customChannelCount < POLITICIAN_MAX_CHANNELS; i++) {
-                _customChannels[_customChannelCount++] = HOP_SEQ[i];
-            }
+    if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    _customChannelCount = 0;
+    if (ghz24) {
+        for (uint8_t i = 0; i < HOP_COUNT && _customChannelCount < POLITICIAN_MAX_CHANNELS; i++) {
+            _customChannels[_customChannelCount++] = HOP_SEQ[i];
         }
-        if (ghz5) {
-            for (uint8_t i = 0; i < sizeof(CHANNEL_5GHZ_COMMON) && _customChannelCount < POLITICIAN_MAX_CHANNELS; i++) {
-                _customChannels[_customChannelCount++] = CHANNEL_5GHZ_COMMON[i];
-            }
-        }
-        _hopIndex = 0;
-        xSemaphoreGiveRecursive(_lock);
     }
-    if (_customChannelCount == 0) {
+    if (ghz5) {
+        for (uint8_t i = 0; i < sizeof(CHANNEL_5GHZ_COMMON) && _customChannelCount < POLITICIAN_MAX_CHANNELS; i++) {
+            _customChannels[_customChannelCount++] = CHANNEL_5GHZ_COMMON[i];
+        }
+    }
+    _hopIndex = 0;
+    uint8_t finalCount = _customChannelCount;
+    xSemaphoreGiveRecursive(_lock);
+
+    if (finalCount == 0) {
         _log("[WiFi] setChannelBands: no bands selected — reverting to default 2.4GHz\n");
     } else {
         _log("[WiFi] Channel bands set: %d channels (2.4GHz=%d 5GHz=%d)\n",
-             _customChannelCount, (int)ghz24, (int)ghz5);
+             finalCount, (int)ghz24, (int)ghz5);
     }
 }
 
 Error Politician::setTargetBySsid(const char *ssid) {
     if (!_initialized) return ERR_NOT_ACTIVE;
+    if (!ssid) return ERR_INVALID_ARG;
     uint8_t ssid_len = (uint8_t)strlen(ssid);
     uint8_t found_bssid[6] = {};
     uint8_t found_channel   = 0;
@@ -662,7 +845,7 @@ void Politician::_sendProbeRequest(const uint8_t *bssid, const char *ssid, uint8
     frame[p++] = 0x01; frame[p++] = 0x08;     // Supported Rates IE
     frame[p++] = 0x82; frame[p++] = 0x84; frame[p++] = 0x8b; frame[p++] = 0x96;
     frame[p++] = 0x0c; frame[p++] = 0x12; frame[p++] = 0x18; frame[p++] = 0x24;
-    esp_wifi_80211_tx(WIFI_IF_STA, frame, p, false);
+    _txRaw(WIFI_IF_STA, frame, p);
     if (ssid && ssid_len > 0)
         _log("[Probe] Wordlist probe '%.*s' -> %02X:%02X:%02X:%02X:%02X:%02X\n",
             ssid_len, ssid, bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
@@ -739,12 +922,17 @@ void Politician::_sendKarmaResponse(const uint8_t *client, const char *ssid,
     // DS Parameter Set IE
     frame[p++] = 0x03; frame[p++] = 0x01; frame[p++] = channel;
 
-    esp_wifi_80211_tx(WIFI_IF_STA, frame, p, false);
+    if (channel >= 1 && _channel != channel && !_m1Locked && !_probeLocked && _fishState == FISH_IDLE) {
+        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+        _channel = channel;
+    }
+
+    _txRaw(WIFI_IF_AP, frame, p);
 
     // ── Beacon (one burst to the same frame, DA flipped to broadcast) ────────
     frame[0] = 0x80; frame[1] = 0x00;  // FC: Beacon
     memset(frame + 4, 0xFF, 6);         // DA: broadcast
-    esp_wifi_80211_tx(WIFI_IF_STA, frame, p, false);
+    _txRaw(WIFI_IF_AP, frame, p);
 
     if (_karmaCb) {
         KarmaRecord rec;
@@ -806,27 +994,8 @@ void Politician::tick() {
             int score = _apCache[i].rssi;
             if (_targetScoreCb) {
                 ApRecord ap_rec;
-                memcpy(ap_rec.bssid, _apCache[i].bssid, 6);
-                memcpy(ap_rec.ssid,  _apCache[i].ssid,  33);
-                ap_rec.ssid_len       = _apCache[i].ssid_len;
-                ap_rec.enc            = _apCache[i].enc;
-                ap_rec.channel        = _apCache[i].channel;
-                ap_rec.rssi           = _apCache[i].rssi;
-                ap_rec.wps_enabled    = _apCache[i].flags.wps_enabled;
-                ap_rec.pmf_capable    = _apCache[i].flags.pmf_capable;
-                ap_rec.pmf_required   = _apCache[i].flags.pmf_required;
-                ap_rec.total_attempts = _apCache[i].total_attempts;
-                ap_rec.captured       = false; // already checked above
-                ap_rec.ft_capable     = _apCache[i].flags.ft_capable;
-                ap_rec.first_seen_ms  = _apCache[i].first_seen_ms;
-                ap_rec.last_seen_ms   = _apCache[i].last_seen_ms;
-                memcpy(ap_rec.country, _apCache[i].country, 3);
-                ap_rec.beacon_interval = _apCache[i].beacon_interval;
-                ap_rec.max_rate_mbps   = _apCache[i].max_rate_mbps;
-                ap_rec.is_hidden       = _apCache[i].flags.is_hidden;
-                ap_rec.sta_count       = _apCache[i].sta_count;
-                ap_rec.chan_util       = _apCache[i].chan_util;
-                
+                _populateApRecord(i, ap_rec);
+                ap_rec.captured = false; // already checked above
                 score = _targetScoreCb(ap_rec, getVendor(ap_rec.bssid));
             }
             
@@ -859,7 +1028,24 @@ void Politician::tick() {
         _lastHopMs = now;
     }
 
-    bool locked = _m1Locked || _probeLocked || _hasTarget;
+    bool peer_locked = false;
+    portENTER_CRITICAL(&_instanceMux);
+    if (_channelLockOwner != nullptr && _channelLockOwner != this) {
+        peer_locked = true;
+    } else {
+        for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
+            Politician *inst = _instances[i];
+            if (inst && inst != this && inst->_active) {
+                if (inst->_m1Locked || inst->_probeLocked || inst->_hasTarget || inst->_fishState != FISH_IDLE) {
+                    peer_locked = true;
+                    break;
+                }
+            }
+        }
+    }
+    portEXIT_CRITICAL(&_instanceMux);
+
+    bool locked = _m1Locked || _probeLocked || _hasTarget || peer_locked;
     uint32_t current_dwell = _cfg.hop_dwell_ms;
     if (_cfg.smart_hopping && !locked) {
         // Evaluate early exit or extended dwell
@@ -879,18 +1065,34 @@ void Politician::tick() {
         _lastHopMs = now;
         _channelTrafficSeen = false;
         
-        // Process inject queue for the new channel
-        for (int i = 0; i < MAX_INJECT_QUEUE; i++) {
-            if (_injectQueue[i].active && _injectQueue[i].channel == _channel) {
-                esp_wifi_80211_tx(WIFI_IF_STA, (void*)_injectQueue[i].payload, _injectQueue[i].len, false);
-                _log("[Inject] Transmitted queued %d bytes on ch%d\n", _injectQueue[i].len, _channel);
-                _injectQueue[i].active = false;
-                if (_injectQueue[i].lock_ms > 0) {
+        // Process inject queue for the new channel in FIFO order
+        uint8_t remaining  = 0;
+        uint8_t new_head   = _injectHead;
+        uint8_t orig_count = _injectCount;
+        uint8_t read_idx   = _injectHead;
+        for (uint8_t n = 0; n < orig_count; n++) {
+            InjectFrame &slot = _injectQueue[read_idx];
+            uint8_t cur_idx = read_idx;
+            read_idx = (read_idx + 1) % MAX_INJECT_QUEUE;
+            if (slot.active && slot.channel == _channel) {
+                _txRaw(WIFI_IF_STA, slot.payload, slot.len);
+                _log("[Inject] Transmitted queued %d bytes on ch%d\n", slot.len, _channel);
+                slot.active = false;
+                if (slot.lock_ms > 0) {
                     _m1Locked = true;
-                    _m1LockEndMs = millis() + _injectQueue[i].lock_ms;
+                    _m1LockEndMs = millis() + slot.lock_ms;
                 }
+            } else if (slot.active) {
+                uint8_t write_idx = (new_head + remaining) % MAX_INJECT_QUEUE;
+                if (write_idx != cur_idx) {
+                    _injectQueue[write_idx] = slot;
+                    slot.active = false;
+                }
+                remaining++;
             }
         }
+        _injectHead  = new_head;
+        _injectCount = remaining;
     }
 
     xSemaphoreGiveRecursive(_lock);
@@ -901,20 +1103,37 @@ void IRAM_ATTR Politician::_promiscuousCb(void *buf, wifi_promiscuous_pkt_type_t
     const wifi_promiscuous_pkt_t *pkt = (const wifi_promiscuous_pkt_t *)buf;
     uint16_t total_len = sizeof(wifi_pkt_rx_ctrl_t) + pkt->rx_ctrl.sig_len;
 
+    Politician *targets[POLITICIAN_MAX_INSTANCES];
+    uint8_t count = 0;
+
+    portENTER_CRITICAL_ISR(&_instanceMux);
     for (uint8_t i = 0; i < POLITICIAN_MAX_INSTANCES; i++) {
         Politician *inst = _instances[i];
-        if (!inst || !inst->_active || !inst->_rb) continue;
+        if (inst && inst->_active && inst->_rb) {
+            inst->_isrUsers++;
+            targets[count++] = inst;
+        }
+    }
+    portEXIT_CRITICAL_ISR(&_instanceMux);
+
+    for (uint8_t i = 0; i < count; i++) {
+        Politician *inst = targets[i];
         if (xRingbufferSendFromISR(inst->_rb, buf, total_len, NULL) != pdTRUE) {
             inst->_stats.dropped++;
         }
+        portENTER_CRITICAL_ISR(&_instanceMux);
+        if (inst->_isrUsers > 0) {
+            inst->_isrUsers--;
+        }
+        portEXIT_CRITICAL_ISR(&_instanceMux);
     }
 }
 
 void Politician::_workerTask(void *pvParameters) {
     Politician *self = (Politician *)pvParameters;
-    while (true) {
+    while (!self->_shutdownRequested) {
         size_t size = 0;
-        wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)xRingbufferReceive(self->_rb, &size, portMAX_DELAY);
+        wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)xRingbufferReceive(self->_rb, &size, pdMS_TO_TICKS(20));
         if (pkt) {
             // Infer frame type from 802.11 Frame Control field
             uint16_t fc = pkt->payload[0] | (pkt->payload[1] << 8);
@@ -923,10 +1142,10 @@ void Politician::_workerTask(void *pvParameters) {
             else if ((fc & 0x0C) == 0x04) type = WIFI_PKT_CTRL;
 
             if (self->_lock && xSemaphoreTakeRecursive(self->_lock, portMAX_DELAY) == pdTRUE) {
-                // Monitor ringbuffer high-water mark
-                size_t free_rb = 0;
-                vRingbufferGetInfo(self->_rb, NULL, NULL, NULL, NULL, &free_rb);
-                uint32_t used_rb = 16384 - (uint32_t)free_rb;
+                // Monitor ringbuffer high-water mark (6th argument uxItemsWaiting = bytes used in NOSPLIT buffer)
+                UBaseType_t waiting_rb = 0;
+                vRingbufferGetInfo(self->_rb, NULL, NULL, NULL, NULL, &waiting_rb);
+                uint32_t used_rb = (uint32_t)waiting_rb;
                 if (used_rb > self->_stats.rb_max) self->_stats.rb_max = used_rb;
 
                 self->_handleFrame(pkt, type);
@@ -935,6 +1154,18 @@ void Politician::_workerTask(void *pvParameters) {
             vRingbufferReturnItem(self->_rb, (void *)pkt);
         }
     }
+
+    portENTER_CRITICAL(&_instanceMux);
+    self->_workerExited = true;
+    self->_task = nullptr;
+    TaskHandle_t waiter = self->_stopWaiter;
+    self->_stopWaiter = nullptr;
+    portEXIT_CRITICAL(&_instanceMux);
+
+    if (waiter) {
+        xTaskNotifyGive(waiter);
+    }
+    vTaskDelete(NULL);
 }
 
 void Politician::_handleFrame(const wifi_promiscuous_pkt_t *pkt, wifi_promiscuous_pkt_type_t type) {
@@ -1057,6 +1288,35 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
         }
         return;
     }
+
+#ifndef POLITICIAN_NO_ESPNOW
+    if (subtype == MGMT_SUB_ACTION) {
+        if (_espNowCb != nullptr && len >= 15) {
+            if (payload[0] == 0x7F &&
+                payload[1] == 0x18 && payload[2] == 0xFE && payload[3] == 0x34 &&
+                payload[8] == 0xDD &&
+                payload[10] == 0x18 && payload[11] == 0xFE && payload[12] == 0x34 &&
+                payload[13] == 0x04 && payload[14] == 0x01) {
+                    const uint16_t bodyOffset = 15;
+                    const uint16_t elementBodyLength = payload[9] >= 5 ? payload[9] - 5 : 0;
+                    const uint16_t availableBodyLength = len - bodyOffset;
+                    const uint16_t bodyLength = elementBodyLength < availableBodyLength
+                                                    ? elementBodyLength
+                                                    : availableBodyLength;
+                    EspNowRecord rec;
+                    memcpy(rec.src, hdr->addr2, 6);
+                    memcpy(rec.dst, hdr->addr1, 6);
+                    rec.channel = _rxChannel;
+                    rec.rssi    = rssi;
+                    rec.ts_usec = (uint32_t)esp_timer_get_time();
+                    rec.payload = payload + bodyOffset;
+                    rec.length  = bodyLength;
+                    _espNowCb(rec);
+            }
+        }
+        return;
+    }
+#endif
 
     // Parse both Beacons and Probe Responses.
     // Sniffing Probe Responses automatically enables Active Decloaking
@@ -1287,7 +1547,7 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                                 ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5], // SA
                                 0x00, 0x00 // Sequence
                             };
-                            esp_wifi_80211_tx(WIFI_IF_STA, wake_null, sizeof(wake_null), false);
+                            _txRaw(WIFI_IF_STA, wake_null, sizeof(wake_null));
                             _log("[Stimulate] Beacon-Sync Null Injection fired at %02X:%02X:%02X:%02X:%02X:%02X\n",
                                 ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5]);
                         }
@@ -1360,6 +1620,11 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
                         break;
                     }
                 }
+                if (_channel != beacon_ch) {
+                    esp_wifi_set_channel(beacon_ch, WIFI_SECOND_CHAN_NONE);
+                    _channel   = beacon_ch;
+                    _rxChannel = beacon_ch;
+                }
                 _fishState = FISH_CSA_WAIT;
                 _csaSecondBurstSent = false;
                 if (effMask & ATTACK_CSA) _sendCsaBurst();
@@ -1383,6 +1648,11 @@ void Politician::_handleMgmt(const ieee80211_hdr_t *hdr, const uint8_t *payload,
             if ((effMask & ATTACK_BTM) && !_isCaptured(ap.bssid)) {
                 for (int ci = 0; ci < MAX_AP_CACHE; ci++) {
                     if (_apCache[ci].flags.active && memcmp(_apCache[ci].bssid, ap.bssid, 6) == 0) {
+                        if (_apCache[ci].known_sta_count > 0 && _channel != beacon_ch) {
+                            esp_wifi_set_channel(beacon_ch, WIFI_SECOND_CHAN_NONE);
+                            _channel   = beacon_ch;
+                            _rxChannel = beacon_ch;
+                        }
                         for (int s = 0; s < _apCache[ci].known_sta_count; s++) {
                             for (int b = 0; b < _cfg.btm_burst_count; b++) {
                                 _sendBtmRequest(ap.bssid, _apCache[ci].known_stas[s]);
@@ -1806,6 +2076,11 @@ bool Politician::_parseEapol(const uint8_t *bssid, const uint8_t *sta,
                             break;
                         }
                     }
+                    if (_channel != _fishChannel && _fishChannel >= 1) {
+                        esp_wifi_set_channel(_fishChannel, WIFI_SECOND_CHAN_NONE);
+                        _channel   = _fishChannel;
+                        _rxChannel = _fishChannel;
+                    }
                     _fishState = FISH_CSA_WAIT; _csaSecondBurstSent = false;
                     _csaFallbackMs = 0;
                     if (_attackMask & ATTACK_CSA) _sendCsaBurst();
@@ -1846,6 +2121,12 @@ void Politician::_parseEapIdentity(const uint8_t *bssid, const uint8_t *sta,
 
     // Safety boundary check
     if (9 + id_len > len) return;
+
+    // Lock channel temporarily so subsequent EAP-WSC (WPS M1) or EAP-MSCHAPv2 exchanges are not missed
+    if (_hopping) {
+        _m1Locked    = true;
+        _m1LockEndMs = millis() + _cfg.m1_lock_ms;
+    }
     
     EapIdentityRecord rec;
     memset(&rec, 0, sizeof(rec));
@@ -1973,7 +2254,7 @@ void Politician::_sendBtmRequest(const uint8_t *bssid, const uint8_t *sta) {
     frame[p++] = (uint8_t)(timer & 0xFF);
     frame[p++] = (uint8_t)(timer >> 8);
     frame[p++] = 0x01;                      // Validity Interval (1 TBTT)
-    esp_wifi_80211_tx(WIFI_IF_AP, frame, p, false);
+    _txRaw(WIFI_IF_AP, frame, p);
 }
 
 #ifndef POLITICIAN_NO_MSCHAPV2
@@ -1997,6 +2278,7 @@ void Politician::_parseEapMsChap(const uint8_t *bssid, const uint8_t *sta,
 
     uint8_t eap_code  = eapol[4];
     uint8_t eap_id    = eapol[5];
+    (void)eap_id;
     uint8_t mschap_op = eapol[9];
     uint8_t ms_id     = eapol[10];
 
@@ -2004,6 +2286,11 @@ void Politician::_parseEapMsChap(const uint8_t *bssid, const uint8_t *sta,
         // AP → Client: MSCHAPv2 Challenge — store the server challenge
         if (len < 30) return;
         if (eapol[13] != 16) return;  // Value-Size must be 16
+
+        if (_hopping) {
+            _m1Locked    = true;
+            _m1LockEndMs = millis() + _cfg.m1_lock_ms;
+        }
 
         // Find or create a session slot
         int slot = -1;
@@ -2395,6 +2682,39 @@ int Politician::getApCount() const {
     return n;
 }
 
+void Politician::_populateApRecord(int i, ApRecord &out) const {
+    memset(&out, 0, sizeof(out));
+    memcpy(out.bssid, _apCache[i].bssid, 6);
+    memcpy(out.ssid,  _apCache[i].ssid,  33);
+    out.ssid_len        = _apCache[i].ssid_len;
+    out.enc             = _apCache[i].enc;
+    out.channel         = _apCache[i].channel;
+    out.rssi            = _apCache[i].rssi;
+    out.wps_enabled     = _apCache[i].flags.wps_enabled;
+    out.pmf_capable     = _apCache[i].flags.pmf_capable;
+    out.pmf_required    = _apCache[i].flags.pmf_required;
+    out.total_attempts  = _apCache[i].total_attempts;
+    out.captured        = _isCaptured(_apCache[i].bssid);
+    out.ft_capable      = _apCache[i].flags.ft_capable;
+    out.first_seen_ms   = _apCache[i].first_seen_ms;
+    out.last_seen_ms    = _apCache[i].last_seen_ms;
+    memcpy(out.country, _apCache[i].country, 3);
+    out.beacon_interval = _apCache[i].beacon_interval;
+    out.max_rate_mbps   = _apCache[i].max_rate_mbps;
+    out.is_hidden       = _apCache[i].flags.is_hidden;
+    out.sta_count       = _apCache[i].sta_count;
+    out.chan_util       = _apCache[i].chan_util;
+    out.venue_group     = _apCache[i].venue_group;
+    out.venue_type      = _apCache[i].venue_type;
+    out.network_type    = _apCache[i].network_type;
+    out.is_vht          = _apCache[i].flags.is_vht;
+    out.is_he           = _apCache[i].flags.is_he;
+    out.chan_width      = _apCache[i].chan_width;
+    out.beacon_count    = _apCache[i].beacon_count;
+    out.capture_count   = _apCache[i].capture_count;
+    out.last_attack_ms  = _apCache[i].last_attack_ms;
+}
+
 bool Politician::getAp(int idx, ApRecord &out) const {
     if (!_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(50)) != pdTRUE) return false;
     int found = 0;
@@ -2402,36 +2722,9 @@ bool Politician::getAp(int idx, ApRecord &out) const {
     for (int i = 0; i < MAX_AP_CACHE; i++) {
         if (!_apCache[i].flags.active) continue;
         if (found == idx) {
-            memcpy(out.bssid, _apCache[i].bssid, 6);
-            memcpy(out.ssid,  _apCache[i].ssid,  33);
-            out.ssid_len       = _apCache[i].ssid_len;
-            out.enc            = _apCache[i].enc;
-            out.channel        = _apCache[i].channel;
-            out.rssi           = _apCache[i].rssi;
-            out.wps_enabled    = _apCache[i].flags.wps_enabled;
-            out.pmf_capable    = _apCache[i].flags.pmf_capable;
-            out.pmf_required   = _apCache[i].flags.pmf_required;
-            out.total_attempts = _apCache[i].total_attempts;
-            out.captured       = _isCaptured(_apCache[i].bssid);
-            out.ft_capable      = _apCache[i].flags.ft_capable;
-            out.first_seen_ms   = _apCache[i].first_seen_ms;
-            out.last_seen_ms    = _apCache[i].last_seen_ms;
-            memcpy(out.country, _apCache[i].country, 3);
-            out.beacon_interval = _apCache[i].beacon_interval;
-            out.max_rate_mbps   = _apCache[i].max_rate_mbps;
-            out.is_hidden       = _apCache[i].flags.is_hidden;
-            out.sta_count       = _apCache[i].sta_count;
-            out.chan_util       = _apCache[i].chan_util;
-            out.venue_group     = _apCache[i].venue_group;
-            out.venue_type      = _apCache[i].venue_type;
-            out.network_type    = _apCache[i].network_type;
-            out.is_vht          = _apCache[i].flags.is_vht;
-            out.is_he           = _apCache[i].flags.is_he;
-            out.chan_width       = _apCache[i].chan_width;
-            out.beacon_count     = _apCache[i].beacon_count;
-            out.capture_count    = _apCache[i].capture_count;
-            out.last_attack_ms   = _apCache[i].last_attack_ms;
-            ok = true; break;
+            _populateApRecord(i, out);
+            ok = true;
+            break;
         }
         found++;
     }
@@ -2444,79 +2737,32 @@ bool Politician::getApByBssid(const uint8_t *bssid, ApRecord &out) const {
     bool ok = false;
     for (int i = 0; i < MAX_AP_CACHE; i++) {
         if (!_apCache[i].flags.active || memcmp(_apCache[i].bssid, bssid, 6) != 0) continue;
-        memcpy(out.bssid, _apCache[i].bssid, 6);
-        memcpy(out.ssid,  _apCache[i].ssid,  33);
-        out.ssid_len       = _apCache[i].ssid_len;
-        out.enc            = _apCache[i].enc;
-        out.channel        = _apCache[i].channel;
-        out.rssi           = _apCache[i].rssi;
-        out.wps_enabled    = _apCache[i].flags.wps_enabled;
-        out.pmf_capable    = _apCache[i].flags.pmf_capable;
-        out.pmf_required   = _apCache[i].flags.pmf_required;
-        out.total_attempts = _apCache[i].total_attempts;
-        out.captured       = _isCaptured(_apCache[i].bssid);
-        out.ft_capable      = _apCache[i].flags.ft_capable;
-        out.first_seen_ms   = _apCache[i].first_seen_ms;
-        out.last_seen_ms    = _apCache[i].last_seen_ms;
-        memcpy(out.country, _apCache[i].country, 3);
-        out.beacon_interval = _apCache[i].beacon_interval;
-        out.max_rate_mbps   = _apCache[i].max_rate_mbps;
-        out.is_hidden       = _apCache[i].flags.is_hidden;
-        out.sta_count       = _apCache[i].sta_count;
-        out.chan_util       = _apCache[i].chan_util;
-        out.venue_group     = _apCache[i].venue_group;
-        out.venue_type      = _apCache[i].venue_type;
-        out.network_type    = _apCache[i].network_type;
-        out.is_vht          = _apCache[i].flags.is_vht;
-        out.is_he           = _apCache[i].flags.is_he;
-        out.chan_width       = _apCache[i].chan_width;
-        out.beacon_count     = _apCache[i].beacon_count;
-        out.capture_count    = _apCache[i].capture_count;
-        out.last_attack_ms   = _apCache[i].last_attack_ms;
-        ok = true; break;
+        _populateApRecord(i, out);
+        ok = true;
+        break;
     }
     xSemaphoreGiveRecursive(_lock);
     return ok;
 }
 
 void Politician::forEachAp(void (*cb)(const ApRecord &ap, void *ctx), void *ctx) const {
-    if (!cb || !_lock || xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(50)) != pdTRUE) return;
+    if (!cb || !_lock) return;
     for (int i = 0; i < MAX_AP_CACHE; i++) {
-        if (!_apCache[i].flags.active) continue;
         ApRecord out;
-        memset(&out, 0, sizeof(out));
-        memcpy(out.bssid, _apCache[i].bssid, 6);
-        memcpy(out.ssid, _apCache[i].ssid, 33);
-        out.ssid_len = _apCache[i].ssid_len;
-        out.enc = _apCache[i].enc;
-        out.channel = _apCache[i].channel;
-        out.rssi = _apCache[i].rssi;
-        out.wps_enabled = _apCache[i].flags.wps_enabled;
-        out.pmf_capable = _apCache[i].flags.pmf_capable;
-        out.pmf_required = _apCache[i].flags.pmf_required;
-        out.total_attempts = _apCache[i].total_attempts;
-        out.captured = _isCaptured(_apCache[i].bssid);
-        out.ft_capable = _apCache[i].flags.ft_capable;
-        out.first_seen_ms = _apCache[i].first_seen_ms;
-        out.last_seen_ms = _apCache[i].last_seen_ms;
-        memcpy(out.country, _apCache[i].country, 3);
-        out.beacon_interval = _apCache[i].beacon_interval;
-        out.max_rate_mbps = _apCache[i].max_rate_mbps;
-        out.is_hidden = _apCache[i].flags.is_hidden;
-        out.sta_count = _apCache[i].sta_count;
-        out.chan_util = _apCache[i].chan_util;
-        out.venue_group = _apCache[i].venue_group;
-        out.venue_type = _apCache[i].venue_type;
-        out.network_type = _apCache[i].network_type;
-        out.is_vht = _apCache[i].flags.is_vht;
-        out.is_he = _apCache[i].flags.is_he;
-        out.chan_width = _apCache[i].chan_width;
-        out.beacon_count = _apCache[i].beacon_count;
-        out.capture_count = _apCache[i].capture_count;
-        out.last_attack_ms = _apCache[i].last_attack_ms;
-        cb(out, ctx);
+        bool active = false;
+        if (xSemaphoreTakeRecursive(_lock, pdMS_TO_TICKS(50)) == pdTRUE) {
+            if (_apCache[i].flags.active) {
+                _populateApRecord(i, out);
+                active = true;
+            }
+            xSemaphoreGiveRecursive(_lock);
+        } else {
+            return;
+        }
+        if (active) {
+            cb(out, ctx);
+        }
     }
-    xSemaphoreGiveRecursive(_lock);
 }
 
 #ifndef POLITICIAN_NO_STD_FUNCTION
@@ -2619,8 +2865,8 @@ void Politician::_sendDeauthBurst(uint8_t count, const uint8_t *sta) {
         if (_cfg.deauth_reason_cycling) {
             deauth[24] = REASONS[i % num_reasons];
         }
-        esp_wifi_80211_tx(WIFI_IF_STA, deauth, sizeof(deauth), false);
-        delay(2);
+        _txRaw(WIFI_IF_STA, deauth, sizeof(deauth));
+        vTaskDelay(1);
     }
     _log("[Deauth] Sent %s burst (Deauth/Disassoc) on ch%d (%s)\n", _cfg.deauth_reason_cycling ? "Fuzzing" : "Static", _fishChannel, (da[0] == 0xFF) ? "broadcast" : "unicast");
 }
@@ -2708,7 +2954,7 @@ void Politician::_sendCsaBurst() {
     frame[p++] = 0x00; frame[p++] = _fishSsidLen; memcpy(frame + p, _fishSsid, _fishSsidLen); p += _fishSsidLen;
     frame[p++] = 0x03; frame[p++] = 0x01; frame[p++] = _fishChannel;
     frame[p++] = 0x25; frame[p++] = 0x03; frame[p++] = 0x01; frame[p++] = 0x0E; frame[p++] = 0x01;
-    for (int i = 0; i < _cfg.csa_beacon_count; i++) { esp_wifi_80211_tx(WIFI_IF_AP, frame, p, false); delay(15); }
+    for (int i = 0; i < _cfg.csa_beacon_count; i++) { _txRaw(WIFI_IF_AP, frame, p); vTaskDelay(pdMS_TO_TICKS(2)); }
     _log("[CSA] Sent burst on ch%d\n", _fishChannel);
 }
 

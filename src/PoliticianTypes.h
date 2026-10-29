@@ -97,46 +97,50 @@ enum Error {
     /** Returned by begin() when all POLITICIAN_MAX_INSTANCES slots are occupied. */
     ERR_MAX_INSTANCES = 6,
     ERR_INVALID_ARG = 7,
-    ERR_QUEUE_FULL = 8
+    ERR_QUEUE_FULL = 8,
+    /** Returned when acquiring the internal synchronization mutex times out. */
+    ERR_LOCK_TIMEOUT = 9,
+    /** Returned when the radio channel or state is locked by another operation or instance. */
+    ERR_BUSY = 10
 };
 
 /**
  * @brief Configuration for the Politician engine.
  */
 struct Config {
-    uint16_t hop_dwell_ms        = 200;  // Time per channel
-    bool     smart_hopping       = true; // Dynamic channel dwell time based on traffic
-    uint16_t hop_min_dwell_ms    = 50;   // Minimum dwell if no traffic is seen
-    uint16_t hop_max_dwell_ms    = 400;  // Maximum dwell if traffic is active
+    const char* soft_ap_ssid       = nullptr; // Custom SSID for the engine's soft AP (nullptr = use default hidden AP)
     uint32_t m1_lock_ms          = 800;  // How long to stay on channel after seeing M1
     uint32_t fish_timeout_ms     = 2000; // Time for PMKID association
-    uint8_t  fish_max_retries    = 2;    // PMKID retries before giving up or CSA
     uint32_t csa_wait_ms         = 4000; // How long to wait for reconnect after CSA
+    uint32_t session_timeout_ms  = 60000; // How long orphaned handshakes live in RAM
+    uint32_t ap_expiry_ms        = 300000; // Evict APs not seen for this long (0 = never expire)
+    uint32_t probe_hidden_interval_ms = 0;     // How often to probe hidden APs for SSID (0 = disabled, opt-in)
+    uint16_t hop_dwell_ms        = 200;  // Time per channel
+    uint16_t hop_min_dwell_ms    = 50;   // Minimum dwell if no traffic is seen
+    uint16_t hop_max_dwell_ms    = 400;  // Maximum dwell if traffic is active
+    uint16_t probe_aggr_interval_s = 30; // Seconds to wait between attacking same AP
+    uint16_t btm_disassoc_timer    = 3;    // Disassociation Timer in TBTTs (~100ms each); 0 = immediate
+    uint8_t  fish_max_retries    = 2;    // PMKID retries before giving up or CSA
     uint8_t  csa_beacon_count    = 8;    // Number of CSA beacons to burst
     uint8_t  deauth_burst_count  = 16;   // Number of classic Deauth frames to send
-    uint16_t probe_aggr_interval_s = 30; // Seconds to wait between attacking same AP
-    uint32_t session_timeout_ms  = 60000; // How long orphaned handshakes live in RAM
-    bool     capture_half_handshakes = false; // Save M2-only captures and pivot to active attack
-    bool     skip_immune_networks = true; // Ignore Pure WPA3 / PMF Required networks
     uint8_t  csa_deauth_count    = 15;   // Number of standard deauths to append
     uint8_t  capture_filter      = LOG_FILTER_HANDSHAKES | LOG_FILTER_PROBES; // Exclude Beacons by default to save SD storage
     int8_t   min_rssi            = -100; // Ignore APs with signal weaker than this (dBm)
-    uint32_t ap_expiry_ms        = 300000; // Evict APs not seen for this long (0 = never expire)
-    bool     unicast_deauth      = true;  // Send deauth to known client MAC instead of broadcast
-    uint32_t probe_hidden_interval_ms = 0;     // How often to probe hidden APs for SSID (0 = disabled, opt-in)
     uint8_t  deauth_reason       = 7;    // 802.11 reason code for deauth frames (7=Class 3 from non-assoc)
-    bool     deauth_reason_cycling = true; // Cycle through effective reason codes during burst (fuzzing)
-    bool     capture_group_keys  = false; // Fire eapolCb with CAP_EAPOL_GROUP on GTK rotation frames
     uint8_t  min_beacon_count    = 0;    // Min times AP must be seen before attack/apFoundCb (0 = no minimum)
     uint8_t  max_total_attempts  = 0;    // Permanently skip BSSID after this many failed attacks (0 = unlimited)
+    uint8_t  enc_filter_mask          = 0xFF;  // Bitmask of enc types to cache: bit0=Open,bit1=WEP,bit2=WPA,bit3=WPA2,bit4=Ent,bit5=OWE
+    uint8_t  btm_burst_count       = 8;    // Number of BTM Request frames per client per trigger
+    bool     smart_hopping       = true; // Dynamic channel dwell time based on traffic
+    bool     capture_half_handshakes = false; // Save M2-only captures and pivot to active attack
+    bool     skip_immune_networks = true; // Ignore Pure WPA3 / PMF Required networks
+    bool     unicast_deauth      = true;  // Send deauth to known client MAC instead of broadcast
+    bool     deauth_reason_cycling = true; // Cycle through effective reason codes during burst (fuzzing)
+    bool     capture_group_keys  = false; // Fire eapolCb with CAP_EAPOL_GROUP on GTK rotation frames
+    bool     ssid_filter_exact   = true; // True = exact SSID match, false = substring match
+    bool     require_active_clients = false; // Skip attack initiation if no active clients seen on AP
     uint8_t  sta_filter[6]       = {};   // Only record EAPOL sessions from this client MAC (zero = no filter)
     char     ssid_filter[33]     = {};   // Only cache APs matching this SSID (empty = no filter)
-    bool     ssid_filter_exact   = true; // True = exact SSID match, false = substring match
-    uint8_t  enc_filter_mask          = 0xFF;  // Bitmask of enc types to cache: bit0=Open,bit1=WEP,bit2=WPA,bit3=WPA2,bit4=Ent,bit5=OWE
-    bool     require_active_clients = false; // Skip attack initiation if no active clients seen on AP
-    const char* soft_ap_ssid       = nullptr; // Custom SSID for the engine's soft AP (nullptr = use default hidden AP)
-    uint8_t  btm_burst_count       = 8;    // Number of BTM Request frames per client per trigger
-    uint16_t btm_disassoc_timer    = 3;    // Disassociation Timer in TBTTs (~100ms each); 0 = immediate
 #ifndef POLITICIAN_NO_KARMA
     bool     karma_enabled         = false; // Enable KARMA rogue AP responder
     bool     karma_open_only       = true;  // Only respond to probes for open/unknown networks (skip known WPA APs)
@@ -167,6 +171,8 @@ inline int validateConfig(const Config &cfg, const char **out, uint8_t maxOut) {
     auto w = [&](const char *msg) { if (n < maxOut) out[n++] = msg; };
     if (cfg.smart_hopping && cfg.hop_min_dwell_ms >= cfg.hop_max_dwell_ms)
         w("hop_min_dwell_ms >= hop_max_dwell_ms — max will be clamped to min+50ms");
+    if (cfg.smart_hopping && cfg.hop_min_dwell_ms > UINT16_MAX - 50)
+        w("hop_min_dwell_ms is too large for the min+50ms clamp");
     if (cfg.fish_timeout_ms < 500)
         w("fish_timeout_ms < 500 — will be clamped to 500ms");
     if (cfg.csa_wait_ms < 1000)
@@ -187,35 +193,35 @@ inline int validateConfig(const Config &cfg, const char **out, uint8_t maxOut) {
 // ─── AP Record ────────────────────────────────────────────────────────────────
 /** @brief Snapshot of a discovered Access Point from the internal cache. Populated by getAp(), getApByBssid(), and the ApFoundCb callback. */
 struct ApRecord {
+    uint32_t first_seen_ms;    // millis() timestamp when this AP was first observed
+    uint32_t last_seen_ms;     // millis() timestamp of the most recent beacon or probe response
+    uint32_t last_attack_ms;   ///< millis() of the most recent attack initiation (0 = never attacked)
+    uint16_t beacon_interval;  // Advertised beacon interval in TUs (1 TU = 1024 µs), 0 if unknown
+    uint16_t sta_count;        // Connected client count from BSS Load IE (if present)
+    uint16_t beacon_count;     ///< Number of beacons observed from this AP in the current session
     uint8_t  bssid[6];
     char     ssid[33];
+    char     country[3];       // ISO 3166-1 alpha-2 country code from IE 7 (e.g. "US"), empty if absent
     uint8_t  ssid_len;
     uint8_t  channel;
     int8_t   rssi;
-    uint8_t  enc;           // ENC_OPEN=0 ENC_WEP=1 ENC_WPA=2 ENC_WPA2=3 ENC_ENT=4 ENC_OWE=5
-    bool     wps_enabled;   // WPS IE detected in beacon/probe-response
-    bool     pmf_capable;      // MFPC bit set in RSN Capabilities (PMF supported)
-    bool     pmf_required;     // MFPR bit set in RSN Capabilities (PMF mandatory)
+    uint8_t  enc;              // ENC_OPEN=0 ENC_WEP=1 ENC_WPA=2 ENC_WPA2=3 ENC_ENT=4 ENC_OWE=5
     uint8_t  total_attempts;   // Number of failed attack attempts recorded
-    bool     captured;         // True if BSSID is on the captured or ignore list
-    bool     ft_capable;       // 802.11r FT AKM advertised (FT-PSK or FT-EAP)
-    uint32_t first_seen_ms;    // millis() timestamp when this AP was first observed
-    uint32_t last_seen_ms;     // millis() timestamp of the most recent beacon or probe response
-    char     country[3];       // ISO 3166-1 alpha-2 country code from IE 7 (e.g. "US"), empty if absent
-    uint16_t beacon_interval;  // Advertised beacon interval in TUs (1 TU = 1024 µs), 0 if unknown
     uint8_t  max_rate_mbps;    // Highest legacy data rate from Supported Rates IEs (Mbps), 0 if unknown
-    bool     is_hidden;        // True if AP broadcasts an empty SSID (hidden network)
-    uint16_t sta_count;        // Connected client count from BSS Load IE (if present)
     uint8_t  chan_util;        // Channel utilization from BSS Load IE (0-255)
     uint8_t  venue_group;      // 802.11u Venue Group (e.g., 2=Education, 10=Residential)
     uint8_t  venue_type;       // 802.11u Venue Type (e.g., 8=University, 1=Coffee Shop)
     uint8_t  network_type;     // 802.11u Access Network Type (1=Free Public, 2=Chargeable, etc.)
+    uint8_t  chan_width;       // Max channel width: 0=20MHz 1=40MHz 2=80MHz 3=160MHz 4=80+80MHz
+    uint8_t  capture_count;    ///< Number of successful handshake/PMKID captures for this BSSID
+    bool     wps_enabled;      // WPS IE detected in beacon/probe-response
+    bool     pmf_capable;      // MFPC bit set in RSN Capabilities (PMF supported)
+    bool     pmf_required;     // MFPR bit set in RSN Capabilities (PMF mandatory)
+    bool     captured;         // True if BSSID is on the captured or ignore list
+    bool     ft_capable;       // 802.11r FT AKM advertised (FT-PSK or FT-EAP)
+    bool     is_hidden;        // True if AP broadcasts an empty SSID (hidden network)
     bool     is_vht;           // 802.11ac (VHT / Wi-Fi 5) capable
     bool     is_he;            // 802.11ax (HE / Wi-Fi 6) capable
-    uint8_t  chan_width;       // Max channel width: 0=20MHz 1=40MHz 2=80MHz 3=160MHz 4=80+80MHz
-    uint16_t beacon_count;     ///< Number of beacons observed from this AP in the current session
-    uint8_t  capture_count;    ///< Number of successful handshake/PMKID captures for this BSSID
-    uint32_t last_attack_ms;   ///< millis() of the most recent attack initiation (0 = never attacked)
 };
 
 // ─── Frame Stats ──────────────────────────────────────────────────────────────
@@ -234,6 +240,8 @@ struct Stats {
     uint32_t failed_csa;        // CSA/Deauth wait expired without EAPOL
     volatile uint32_t dropped;  // Frames dropped due to ringbuffer overflow
     uint32_t rb_max;            // Max observed ringbuffer usage (bytes)
+    uint32_t tx_packets;        ///< Total raw 802.11 frames successfully queued for transmission
+    uint32_t tx_dropped;        ///< Raw 802.11 frames dropped due to TX queue exhaustion or errors
     uint16_t channel_frames[200]; // Frames received per channel, indexed by channel number (e.g. ch1=index1, ch36=index36). Index 0 unused.
 };
 
@@ -364,6 +372,28 @@ using KarmaCb = std::function<void(const KarmaRecord &rec)>;
 typedef void (*KarmaCb)(const KarmaRecord &rec);
 #endif
 #endif // POLITICIAN_NO_KARMA
+
+// ─── ESP-NOW Record ───────────────────────────────────────────────────────────
+#ifndef POLITICIAN_NO_ESPNOW
+/**
+ * @brief Delivered to the EspNowCb callback when an ESP-NOW vendor-specific action frame is captured.
+ */
+struct EspNowRecord {
+    uint8_t  src[6];          ///< Source MAC address (transmitter)
+    uint8_t  dst[6];          ///< Destination MAC address (receiver or broadcast)
+    uint8_t  channel;         ///< Channel on which the frame was captured
+    int8_t   rssi;            ///< Signal strength of the frame (dBm)
+    uint32_t ts_usec;         ///< RX timestamp in microseconds
+    const uint8_t* payload;   ///< Pointer to internal ring-buffer memory; only valid for callback duration. Do not free, retain, or queue past callback return; memcpy if needed.
+    uint16_t length;          ///< Length of the ESP-NOW payload
+};
+
+#ifndef POLITICIAN_NO_STD_FUNCTION
+using EspNowCb = std::function<void(const EspNowRecord &rec)>;
+#else
+typedef void (*EspNowCb)(const EspNowRecord &rec);
+#endif
+#endif // POLITICIAN_NO_ESPNOW
 
 // ─── 802.1X Enterprise Identity Record ─────────────────────────────────────────
 // EAP method constants (RFC 3748 / RFC 5281)
