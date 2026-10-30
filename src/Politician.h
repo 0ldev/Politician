@@ -147,46 +147,46 @@ typedef struct {
 } __attribute__((packed)) ieee80211_frame_t;
 
 // ─── Frame Control Masks ──────────────────────────────────────────────────────
-#define FC_TYPE_MASK        0x000C
-#define FC_SUBTYPE_MASK     0x00F0
-#define FC_TODS_MASK        0x0100
-#define FC_FROMDS_MASK      0x0200
-#define FC_TYPE_MGMT        0x0000
-#define FC_TYPE_CTRL        0x0004
-#define FC_TYPE_DATA        0x0008
-#define FC_ORDER_MASK       0x8000
+static constexpr uint16_t FC_TYPE_MASK    = 0x000C; ///< 802.11 Frame Control type bitmask (bits 2-3)
+static constexpr uint16_t FC_SUBTYPE_MASK = 0x00F0; ///< 802.11 Frame Control subtype bitmask (bits 4-7)
+static constexpr uint16_t FC_TODS_MASK    = 0x0100; ///< 802.11 Frame Control To-DS bit (bit 8)
+static constexpr uint16_t FC_FROMDS_MASK  = 0x0200; ///< 802.11 Frame Control From-DS bit (bit 9)
+static constexpr uint16_t FC_TYPE_MGMT    = 0x0000; ///< 802.11 Management frame type (00)
+static constexpr uint16_t FC_TYPE_CTRL    = 0x0004; ///< 802.11 Control frame type (01)
+static constexpr uint16_t FC_TYPE_DATA    = 0x0008; ///< 802.11 Data frame type (10)
+static constexpr uint16_t FC_ORDER_MASK   = 0x8000; ///< 802.11 Frame Control Order / +HTC bit (bit 15)
 
-#define MGMT_SUB_ASSOC_REQ  0x00
-#define MGMT_SUB_ASSOC_RESP 0x10
-#define MGMT_SUB_PROBE_REQ  0x40
-#define MGMT_SUB_PROBE_RESP 0x50
-#define MGMT_SUB_BEACON     0x80
-#define MGMT_SUB_AUTH       0xB0
-#define MGMT_SUB_DISASSOC   0xA0
-#define MGMT_SUB_DEAUTH     0xC0
-#define MGMT_SUB_ACTION     0xD0
+static constexpr uint8_t MGMT_SUB_ASSOC_REQ  = 0x00; ///< 802.11 Management subtype: Association Request
+static constexpr uint8_t MGMT_SUB_ASSOC_RESP = 0x10; ///< 802.11 Management subtype: Association Response
+static constexpr uint8_t MGMT_SUB_PROBE_REQ  = 0x40; ///< 802.11 Management subtype: Probe Request
+static constexpr uint8_t MGMT_SUB_PROBE_RESP = 0x50; ///< 802.11 Management subtype: Probe Response
+static constexpr uint8_t MGMT_SUB_BEACON     = 0x80; ///< 802.11 Management subtype: Beacon
+static constexpr uint8_t MGMT_SUB_DISASSOC   = 0xA0; ///< 802.11 Management subtype: Disassociation
+static constexpr uint8_t MGMT_SUB_AUTH       = 0xB0; ///< 802.11 Management subtype: Authentication
+static constexpr uint8_t MGMT_SUB_DEAUTH     = 0xC0; ///< 802.11 Management subtype: Deauthentication
+static constexpr uint8_t MGMT_SUB_ACTION     = 0xD0; ///< 802.11 Management subtype: Action
 
 // ─── EAPOL ────────────────────────────────────────────────────────────────────
-#define EAPOL_LLC_OFFSET    0
-#define EAPOL_ETHERTYPE_HI  0x88
-#define EAPOL_ETHERTYPE_LO  0x8E
-#define EAPOL_LLC_SIZE      8
-#define EAPOL_MIN_FRAME_LEN (EAPOL_LLC_SIZE + 4)
+static constexpr uint8_t  EAPOL_LLC_OFFSET    = 0;    ///< Offset of LLC/SNAP header in 802.11 data payload
+static constexpr uint8_t  EAPOL_ETHERTYPE_HI  = 0x88; ///< EAPOL EtherType high byte (0x888E)
+static constexpr uint8_t  EAPOL_ETHERTYPE_LO  = 0x8E; ///< EAPOL EtherType low byte (0x888E)
+static constexpr uint16_t EAPOL_LLC_SIZE      = 8;    ///< Length of 802.2 LLC/SNAP header in bytes
+static constexpr uint16_t EAPOL_MIN_FRAME_LEN = EAPOL_LLC_SIZE + 4; ///< Minimum valid LLC + EAPOL header length
 
-#define EAPOL_KEY_DESC_TYPE     0
-#define EAPOL_KEY_INFO          1
-#define EAPOL_REPLAY_COUNTER    5
-#define EAPOL_KEY_NONCE        13
-#define EAPOL_KEY_MIC          77
-#define EAPOL_KEY_DATA_LEN     93
-#define EAPOL_KEY_DATA         95
+static constexpr uint16_t EAPOL_KEY_DESC_TYPE  = 0;  ///< Offset of Descriptor Type in EAPOL-Key body
+static constexpr uint16_t EAPOL_KEY_INFO       = 1;  ///< Offset of Key Information field (2B, big-endian)
+static constexpr uint16_t EAPOL_REPLAY_COUNTER = 5;  ///< Offset of 8-byte Replay Counter in EAPOL-Key body
+static constexpr uint16_t EAPOL_KEY_NONCE      = 13; ///< Offset of 32-byte Key Nonce (ANonce/SNonce)
+static constexpr uint16_t EAPOL_KEY_MIC        = 77; ///< Offset of 16-byte Key MIC in EAPOL-Key body
+static constexpr uint16_t EAPOL_KEY_DATA_LEN   = 93; ///< Offset of Key Data Length field (2B, big-endian)
+static constexpr uint16_t EAPOL_KEY_DATA       = 95; ///< Offset of variable-length Key Data payload
 
-#define KEYINFO_TYPE_MASK   0x0007
-#define KEYINFO_PAIRWISE    0x0008
-#define KEYINFO_ACK         0x0080
-#define KEYINFO_MIC         0x0100
-#define KEYINFO_SECURE      0x0200
-#define KEYINFO_INSTALL     0x0040
+static constexpr uint16_t KEYINFO_TYPE_MASK = 0x0007; ///< EAPOL Key Info: Key Descriptor Version mask
+static constexpr uint16_t KEYINFO_PAIRWISE  = 0x0008; ///< EAPOL Key Info: Key Type (1 = Pairwise, 0 = Group)
+static constexpr uint16_t KEYINFO_INSTALL   = 0x0040; ///< EAPOL Key Info: Install bit
+static constexpr uint16_t KEYINFO_ACK       = 0x0080; ///< EAPOL Key Info: Key Ack bit
+static constexpr uint16_t KEYINFO_MIC       = 0x0100; ///< EAPOL Key Info: Key MIC bit
+static constexpr uint16_t KEYINFO_SECURE    = 0x0200; ///< EAPOL Key Info: Secure bit
 
 // ─── Politician (The Handshaker) ──────────────────────────────────────────────
 

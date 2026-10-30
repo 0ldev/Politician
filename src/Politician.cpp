@@ -1138,8 +1138,8 @@ void Politician::_workerTask(void *pvParameters) {
             // Infer frame type from 802.11 Frame Control field
             uint16_t fc = pkt->payload[0] | (pkt->payload[1] << 8);
             wifi_promiscuous_pkt_type_t type = WIFI_PKT_MGMT;
-            if ((fc & 0x0C) == 0x08) type = WIFI_PKT_DATA;
-            else if ((fc & 0x0C) == 0x04) type = WIFI_PKT_CTRL;
+            if ((fc & FC_TYPE_MASK) == FC_TYPE_DATA) type = WIFI_PKT_DATA;
+            else if ((fc & FC_TYPE_MASK) == FC_TYPE_CTRL) type = WIFI_PKT_CTRL;
 
             if (self->_lock && xSemaphoreTakeRecursive(self->_lock, portMAX_DELAY) == pdTRUE) {
                 // Monitor ringbuffer high-water mark (6th argument uxItemsWaiting = bytes used in NOSPLIT buffer)
