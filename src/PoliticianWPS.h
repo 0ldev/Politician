@@ -8,6 +8,7 @@
  * a WPS Enrollee, exposing device attributes without any active interaction.
  *
  * Usage:
+ * @code
  *   #include "Politician.h"
  *   #include "PoliticianWPS.h"   // Add this line
  *
@@ -16,6 +17,7 @@
  *           rec.device_name, rec.manufacturer, PoliticianWPS::configMethodsStr(rec.config_methods));
  *       PoliticianWPS::print(Serial, rec);
  *   });
+ * @endcode
  *
  * Notes:
  *  - Only M1 (Enrollee → AP) is unencrypted and parseable passively.

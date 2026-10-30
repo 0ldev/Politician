@@ -2,7 +2,9 @@
 #include <Politician.h>
 #include <PoliticianFormat.h>
 
-politician::Politician engine;
+using namespace politician;
+
+Politician engine;
 
 // Callback for when a handshake is successfully captured
 void onHandshake(const politician::HandshakeRecord &rec) {

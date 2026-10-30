@@ -19,6 +19,7 @@
  *   -DPOLITICIAN_MAX_FP_SEEN=N   seen-MAC dedup cache size     [default 64]
  *
  * USAGE:
+ * @code
  *   #include <PoliticianFingerprint.h>
  *   fingerprint::Detector fp(engine);
  *   fp.setCallback([](const DeviceRecord& dev) {
@@ -27,6 +28,7 @@
  *   });
  *   fp.setMinConfidence(60);
  *   fp.addFingerprint({"Acme", "Plug", {0xAA,0xBB,0xCC}, nullptr, 75});
+ * @endcode
  *
  * NOTE: Include in a single translation unit (your main sketch).
  */

@@ -19,42 +19,42 @@ namespace politician {
 // #define POLITICIAN_NO_KARMA           // Strip KARMA rogue AP responder (KarmaRecord, KarmaCb, probe-response injection)
 
 // ─── Capture Types ────────────────────────────────────────────────────────────
-#define CAP_PMKID           0x01  // PMKID fishing (fake association)
-#define CAP_EAPOL           0x02  // Passive EAPOL (natural client reconnection)
-#define CAP_EAPOL_CSA       0x03  // EAPOL triggered by CSA beacon injection
-#define CAP_EAPOL_HALF      0x04  // M2-only capture (no anonce) — active attack pivot triggered
-#define CAP_EAPOL_GROUP     0x05  // Non-pairwise EAPOL-Key (GTK rotation)
-#define CAP_SAE             0x06  // WPA3 SAE (Simultaneous Authentication of Equals) Commit/Confirm frame
+static constexpr uint8_t CAP_PMKID       = 0x01; ///< PMKID fishing (fake association)
+static constexpr uint8_t CAP_EAPOL       = 0x02; ///< Passive EAPOL (natural client reconnection)
+static constexpr uint8_t CAP_EAPOL_CSA   = 0x03; ///< EAPOL triggered by CSA beacon injection
+static constexpr uint8_t CAP_EAPOL_HALF  = 0x04; ///< M2-only capture (no anonce) — active attack pivot triggered
+static constexpr uint8_t CAP_EAPOL_GROUP = 0x05; ///< Non-pairwise EAPOL-Key (GTK rotation)
+static constexpr uint8_t CAP_SAE         = 0x06; ///< WPA3 SAE (Simultaneous Authentication of Equals) Commit/Confirm frame
 
 // ─── Encryption Type Constants ────────────────────────────────────────────────
 // Used in ApRecord.enc and Config.enc_filter_mask (bit N = enc value N)
-#define ENC_OPEN    0  // Open network (no encryption)
-#define ENC_WEP     1  // WEP (Privacy bit set, no RSN/WPA IE)
-#define ENC_WPA     2  // WPA (vendor IE 00:50:F2:01)
-#define ENC_WPA2    3  // WPA2/WPA3-Transition (RSN IE with PSK or SAE AKM)
-#define ENC_ENT     4  // 802.1X Enterprise (RSN IE with 802.1X AKM suite 1)
-#define ENC_OWE     5  // OWE — Opportunistic Wireless Encryption (AKM suite 18); no PSK, no PMKID
+static constexpr uint8_t ENC_OPEN = 0; ///< Open network (no encryption)
+static constexpr uint8_t ENC_WEP  = 1; ///< WEP (Privacy bit set, no RSN/WPA IE)
+static constexpr uint8_t ENC_WPA  = 2; ///< WPA (vendor IE 00:50:F2:01)
+static constexpr uint8_t ENC_WPA2 = 3; ///< WPA2/WPA3-Transition (RSN IE with PSK or SAE AKM)
+static constexpr uint8_t ENC_ENT  = 4; ///< 802.1X Enterprise (RSN IE with 802.1X AKM suite 1)
+static constexpr uint8_t ENC_OWE  = 5; ///< OWE — Opportunistic Wireless Encryption (AKM suite 18); no PSK, no PMKID
 
 // ─── Attack Selection Bits ────────────────────────────────────────────────────
-#define ATTACK_PMKID         0x01  // PMKID fishing
-#define ATTACK_CSA           0x02  // CSA beacon injection
-#define ATTACK_PASSIVE       0x04  // Passive EAPOL capture
-#define ATTACK_DEAUTH        0x08  // Classic Reason 7 Deauthentication
-#define ATTACK_STIMULATE     0x10  // Zero-delay QoS Null Client Stimulation
-#define ATTACK_BTM           0x20  // 802.11v BSS Transition Management Request (polite client steering)
-#define ATTACK_ALL           0x3F
+static constexpr uint8_t ATTACK_PMKID     = 0x01; ///< PMKID fishing
+static constexpr uint8_t ATTACK_CSA       = 0x02; ///< CSA beacon injection
+static constexpr uint8_t ATTACK_PASSIVE   = 0x04; ///< Passive EAPOL capture
+static constexpr uint8_t ATTACK_DEAUTH    = 0x08; ///< Classic Reason 7 Deauthentication
+static constexpr uint8_t ATTACK_STIMULATE = 0x10; ///< Zero-delay QoS Null Client Stimulation
+static constexpr uint8_t ATTACK_BTM       = 0x20; ///< 802.11v BSS Transition Management Request (polite client steering)
+static constexpr uint8_t ATTACK_ALL       = 0x3F; ///< Combined mask of all active/passive attack modes
 
 // ─── Capture Filters ──────────────────────────────────────────────────────────
 // NOTE: Logging High-Frequency Intel (like Beacons) via standard SPI (SD.h) will
 // create massive blocking delays (20-50ms per flush) that destroy the hopper's 
 // attack loop. If you enable LOG_FILTER_BEACONS or LOG_FILTER_ALL, you MUST 
 // use a board wired for SDMMC (4-bit DMA) for non-blocking background writes.
-#define LOG_FILTER_HANDSHAKES  0x01 // EAPOLs, PMKIDs (Crackable info, SPI Safe)
-#define LOG_FILTER_PROBES      0x02 // Probe Requests & Responses (Scouting, SPI Safe)
-#define LOG_FILTER_BEACONS     0x04 // Beacons (Network Mapping, SDMMC ONLY!)
-#define LOG_FILTER_PROBE_REQ   0x08 // Probe Requests as raw EPBs (Client Device History, SPI Safe)
-#define LOG_FILTER_MGMT_DISRUPT 0x10 // Deauth/Disassoc frames as raw EPBs (Attack Detection, SPI Safe)
-#define LOG_FILTER_ALL         0xFF // Everything (SDMMC ONLY!)
+static constexpr uint8_t LOG_FILTER_HANDSHAKES   = 0x01; ///< EAPOLs, PMKIDs (Crackable info, SPI Safe)
+static constexpr uint8_t LOG_FILTER_PROBES       = 0x02; ///< Probe Requests & Responses (Scouting, SPI Safe)
+static constexpr uint8_t LOG_FILTER_BEACONS      = 0x04; ///< Beacons (Network Mapping, SDMMC ONLY!)
+static constexpr uint8_t LOG_FILTER_PROBE_REQ    = 0x08; ///< Probe Requests as raw EPBs (Client Device History, SPI Safe)
+static constexpr uint8_t LOG_FILTER_MGMT_DISRUPT = 0x10; ///< Deauth/Disassoc frames as raw EPBs (Attack Detection, SPI Safe)
+static constexpr uint8_t LOG_FILTER_ALL          = 0xFF; ///< Everything (SDMMC ONLY!)
 
 // ─── Logging Callback ─────────────────────────────────────────────────────────
 #ifndef POLITICIAN_NO_STD_FUNCTION
@@ -484,17 +484,17 @@ struct MsChapRecord {
 // ─── Device Fingerprint ───────────────────────────────────────────────────────
 
 // match_flags bits (reported in DeviceRecord)
-#define FP_MATCH_OUI        0x01
-#define FP_MATCH_PROBE_SSID 0x02
-#define FP_MATCH_HT_CAP     0x04
-#define FP_MATCH_RATES      0x08
-#define FP_MATCH_IE_FLAGS   0x10
+static constexpr uint8_t FP_MATCH_OUI        = 0x01; ///< Matched OUI prefix (first 3 MAC bytes)
+static constexpr uint8_t FP_MATCH_PROBE_SSID = 0x02; ///< Matched probe request SSID prefix
+static constexpr uint8_t FP_MATCH_HT_CAP     = 0x04; ///< Matched HT Capabilities Info bitmask
+static constexpr uint8_t FP_MATCH_RATES      = 0x08; ///< Matched Supported Rates IE signature
+static constexpr uint8_t FP_MATCH_IE_FLAGS   = 0x10; ///< Matched IE presence/absence flags
 
 // ie_flags / ie_flags_mask bits (in DeviceFingerprint)
-#define FP_IEF_NO_HT        0x01  // IE 45 (HT Capabilities) absent
-#define FP_IEF_NO_EXT_CAP   0x02  // IE 127 (Extended Capabilities) absent
-#define FP_IEF_HAS_WMM      0x04  // WMM vendor IE (00:50:F2:01) present
-#define FP_IEF_HAS_WPS      0x08  // WPS vendor IE (00:50:F2:04) present
+static constexpr uint8_t FP_IEF_NO_HT      = 0x01; ///< IE 45 (HT Capabilities) absent
+static constexpr uint8_t FP_IEF_NO_EXT_CAP = 0x02; ///< IE 127 (Extended Capabilities) absent
+static constexpr uint8_t FP_IEF_HAS_WMM    = 0x04; ///< WMM vendor IE (00:50:F2:01) present
+static constexpr uint8_t FP_IEF_HAS_WPS    = 0x08; ///< WPS vendor IE (00:50:F2:04) present
 
 /** @brief One fingerprint entry in the built-in or user-defined database. */
 struct DeviceFingerprint {
@@ -523,3 +523,44 @@ struct DeviceRecord {
 };
 
 } // namespace politician
+
+// ─── Global Namespace Aliases ─────────────────────────────────────────────────
+using politician::CAP_PMKID;
+using politician::CAP_EAPOL;
+using politician::CAP_EAPOL_CSA;
+using politician::CAP_EAPOL_HALF;
+using politician::CAP_EAPOL_GROUP;
+using politician::CAP_SAE;
+
+using politician::ENC_OPEN;
+using politician::ENC_WEP;
+using politician::ENC_WPA;
+using politician::ENC_WPA2;
+using politician::ENC_ENT;
+using politician::ENC_OWE;
+
+using politician::ATTACK_PMKID;
+using politician::ATTACK_CSA;
+using politician::ATTACK_PASSIVE;
+using politician::ATTACK_DEAUTH;
+using politician::ATTACK_STIMULATE;
+using politician::ATTACK_BTM;
+using politician::ATTACK_ALL;
+
+using politician::LOG_FILTER_HANDSHAKES;
+using politician::LOG_FILTER_PROBES;
+using politician::LOG_FILTER_BEACONS;
+using politician::LOG_FILTER_PROBE_REQ;
+using politician::LOG_FILTER_MGMT_DISRUPT;
+using politician::LOG_FILTER_ALL;
+
+using politician::FP_MATCH_OUI;
+using politician::FP_MATCH_PROBE_SSID;
+using politician::FP_MATCH_HT_CAP;
+using politician::FP_MATCH_RATES;
+using politician::FP_MATCH_IE_FLAGS;
+
+using politician::FP_IEF_NO_HT;
+using politician::FP_IEF_NO_EXT_CAP;
+using politician::FP_IEF_HAS_WMM;
+using politician::FP_IEF_HAS_WPS;
