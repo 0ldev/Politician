@@ -60,7 +60,9 @@
  *  to register a pass-through callback that fires on every frame after sensing.
  *
  * Compile-time tuning:
+ * @code
  *  #define POLITICIAN_SENSE_MAX_WINDOW 128  // Enlarge maximum window (default 64)
+ * @endcode
  */
 
 #include "Politician.h"
