@@ -539,6 +539,9 @@ public:
      * @param lock_ms Optional. If > 0, the engine disables hopping and stays on the channel for this duration.
      * @param wait_for_channel If true, the frame is queued until the hopper naturally reaches the channel (stealth). If false, the engine immediately switches to the channel and fires.
      * @return OK on success, ERR_INVALID_ARG if rejected by the Wi-Fi driver (e.g. subtype blocked by ieee80211_raw_frame_sanity_check), or an error code if the queue is full or engine is not initialized.
+     * @see Mehdi Mansour (mahdamin), "Enabling Raw 802.11 Management Frame Injection on
+     *      ESP-IDF v6...", NHSM Algiers, Oct 2026 (https://github.com/mahdamin/esp-idf-injection-ng),
+     *      and prior art in `wsl_bypasser` / `esp32-wifi-penetration-tool`.
      */
     Error   injectCustomFrame(const uint8_t *payload, size_t len, uint8_t channel, uint32_t lock_ms = 0, bool wait_for_channel = false);
 

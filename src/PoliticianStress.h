@@ -21,6 +21,9 @@ namespace stress {
      *       `ieee80211_raw_frame_sanity_check` blocks Authentication (`0xB0`) frames
      *       with `ESP_ERR_INVALID_ARG`. When rejected, this function aborts immediately
      *       and returns `0`.
+     * @see Mehdi Mansour (mahdamin), "Enabling Raw 802.11 Management Frame Injection on
+     *      ESP-IDF v6...", NHSM Algiers, Oct 2026 (https://github.com/mahdamin/esp-idf-injection-ng),
+     *      and prior art in `wsl_bypasser` / `esp32-wifi-penetration-tool`.
      *
      * @param bssid   Target router's MAC address
      * @param count   Number of frames to fire natively
@@ -37,6 +40,9 @@ namespace stress {
      *       `ieee80211_raw_frame_sanity_check` blocks Probe Request (`0x40`) frames
      *       with `ESP_ERR_INVALID_ARG`. When rejected, this function aborts immediately
      *       and returns `0`.
+     * @see Mehdi Mansour (mahdamin), "Enabling Raw 802.11 Management Frame Injection on
+     *      ESP-IDF v6...", NHSM Algiers, Oct 2026 (https://github.com/mahdamin/esp-idf-injection-ng),
+     *      and prior art in `wsl_bypasser` / `esp32-wifi-penetration-tool`.
      *
      * @param count   Number of frames to fire natively
      * @param channel Optional 802.11 channel to tune the radio to before flooding (0 = keep current channel)

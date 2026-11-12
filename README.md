@@ -1179,6 +1179,7 @@ MIT License — see [`LICENSE`](LICENSE) for details.
 
 ## Acknowledgments
 
-Special thanks to [justcallmekoko](https://github.com/justcallmekoko) for inspiring this project and the broader hardware hacking community through the [ESP32 Marauder](https://github.com/justcallmekoko/ESP32Marauder) project.
+- Special thanks to [justcallmekoko](https://github.com/justcallmekoko) for inspiring this project and the broader hardware hacking community through the [ESP32 Marauder](https://github.com/justcallmekoko/ESP32Marauder) project.
+- **Raw 802.11 Frame Sanity Check Analysis**: Credit to **Mehdi Mansour** ([@mahdamin](https://github.com/mahdamin), National Higher School of Mathematics — NHSM Algiers) for documenting modern ESP-IDF `libnet80211.a` strong-symbol `ieee80211_raw_frame_sanity_check` behavior in [`esp-idf-injection-ng`](https://github.com/mahdamin/esp-idf-injection-ng) (*"Enabling Raw 802.11 Management Frame Injection on ESP-IDF v6…"*, NHSM Algiers, Oct 2026), building on prior art from `wsl_bypasser` and [`esp32-wifi-penetration-tool`](https://github.com/risinek/esp32-wifi-penetration-tool).
 
 
