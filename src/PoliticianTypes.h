@@ -40,7 +40,7 @@ static constexpr uint8_t ATTACK_PMKID     = 0x01; ///< PMKID fishing
 static constexpr uint8_t ATTACK_CSA       = 0x02; ///< CSA beacon injection
 static constexpr uint8_t ATTACK_PASSIVE   = 0x04; ///< Passive EAPOL capture
 static constexpr uint8_t ATTACK_DEAUTH    = 0x08; ///< Classic Reason 7 Deauthentication
-static constexpr uint8_t ATTACK_STIMULATE = 0x10; ///< Zero-delay QoS Null Client Stimulation
+static constexpr uint8_t ATTACK_STIMULATE = 0x10; ///< Zero-delay Null Data Client Stimulation
 static constexpr uint8_t ATTACK_BTM       = 0x20; ///< 802.11v BSS Transition Management Request (polite client steering)
 static constexpr uint8_t ATTACK_ALL       = 0x3F; ///< Combined mask of all active/passive attack modes
 
@@ -242,6 +242,7 @@ struct Stats {
     uint32_t rb_max;            // Max observed ringbuffer usage (bytes)
     uint32_t tx_packets;        ///< Total raw 802.11 frames successfully queued for transmission
     uint32_t tx_dropped;        ///< Raw 802.11 frames dropped due to TX queue exhaustion or errors
+    uint32_t tx_unsupported;    ///< Raw 802.11 frames rejected with ESP_ERR_INVALID_ARG by ieee80211_raw_frame_sanity_check
     uint16_t channel_frames[200]; // Frames received per channel, indexed by channel number (e.g. ch1=index1, ch36=index36). Index 0 unused.
 };
 

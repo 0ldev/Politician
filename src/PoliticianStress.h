@@ -16,21 +16,33 @@ namespace stress {
     /**
      * @brief Blasts a massive SAE (Simultaneous Authentication of Equals) Commit flood.
      *        Forces WPA3 routers to rapidly consume heap memory parsing anti-clogging tokens.
-     * 
+     *
+     * @note On unpatched ESP-IDF / Arduino-ESP32 `libnet80211.a` archives,
+     *       `ieee80211_raw_frame_sanity_check` blocks Authentication (`0xB0`) frames
+     *       with `ESP_ERR_INVALID_ARG`. When rejected, this function aborts immediately
+     *       and returns `0`.
+     *
      * @param bssid   Target router's MAC address
      * @param count   Number of frames to fire natively
      * @param channel Optional 802.11 channel to tune the radio to before flooding (0 = keep current channel)
+     * @return Number of frames accepted by `esp_wifi_80211_tx()` (0 if blocked by the SDK blob).
      */
-    void saeCommitFlood(const uint8_t* bssid, uint32_t count = 1000, uint8_t channel = 0);
+    uint32_t saeCommitFlood(const uint8_t* bssid, uint32_t count = 1000, uint8_t channel = 0);
 
     /**
      * @brief Blasts out massive strings of randomized Probe Requests to overwhelm
      *        local Access Points with client association processing queues.
-     * 
+     *
+     * @note On unpatched ESP-IDF / Arduino-ESP32 `libnet80211.a` archives,
+     *       `ieee80211_raw_frame_sanity_check` blocks Probe Request (`0x40`) frames
+     *       with `ESP_ERR_INVALID_ARG`. When rejected, this function aborts immediately
+     *       and returns `0`.
+     *
      * @param count   Number of frames to fire natively
      * @param channel Optional 802.11 channel to tune the radio to before flooding (0 = keep current channel)
+     * @return Number of frames accepted by `esp_wifi_80211_tx()` (0 if blocked by the SDK blob).
      */
-    void probeRequestFlood(uint32_t count = 1000, uint8_t channel = 0);
+    uint32_t probeRequestFlood(uint32_t count = 1000, uint8_t channel = 0);
 
     /**
      * @brief Transmits beacon frames with rotating fake SSIDs to stress-test AP
@@ -44,9 +56,10 @@ namespace stress {
      * @param ssidCount   Number of entries in @p ssids
      * @param channel     802.11 channel to advertise on (1-13 for 2.4GHz)
      * @param durationMs  Total duration of the flood in milliseconds
+     * @return Number of beacon frames successfully transmitted.
      */
-    void beaconFlood(const char **ssids, uint8_t ssidCount,
-                     uint8_t channel, uint32_t durationMs);
+    uint32_t beaconFlood(const char **ssids, uint8_t ssidCount,
+                         uint8_t channel, uint32_t durationMs);
 
 }
 }
